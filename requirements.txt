@@ -4,3 +4,4 @@ pandas
 numpy
 matplotlib
 numpy-financial
+google-genai
