@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """app.py
 
-Robot Financiero Inteligente con integración completa de Google Gemini (google-genai).
+Robot Financiero Inteligente con integración completa de Google Gemini (google-genai)
+corregido para compatibilidad de Gradio (formato tuplas en Chatbot) y binding para Render.
 """
 
 # BLOQUE 1 — Librerías y configuración visual (estilo Yahoo Finance)
@@ -654,7 +655,7 @@ def simular_inv(precios, tickers, monto, p1, p2, p3, p4, p5, anio):
             vf = inv * (s.iloc[-1] / s.iloc[0])
             total += vf
             filas.append((nombre_de(t), w*100, inv, vf, (vf/inv - 1)*100))
-        md = "| Empresa | % | Invertido | Final | Resultado |\n| :--- | :---: | :---: | :---: | :---: |\n"
+        md = "| Empresa | % | Invertido | Final | Resultado |\n| :--- | :---: | :---: | :---: |\n"
         for n, w, inv, vf, g in filas:
             c = YF["green"] if g >= 0 else YF["red"]
             md += f"| {n} | {w:.0f}% | ${inv:,.0f} | ${vf:,.0f} | <span style='color:{c}'>{g:+.1f}%</span> |\n"
@@ -782,8 +783,7 @@ def chat_ui(hist, msg, ctx):
         return hist, ""
     resp = chatbot_responder(msg, ctx or {})
     hist = list(hist or [])
-    hist.append({"role": "user", "content": msg})
-    hist.append({"role": "assistant", "content": resp})
+    hist.append((msg, resp))
     return hist, ""
 
 print("✅ BLOQUE 8 listo")
@@ -890,7 +890,7 @@ with gr.Blocks(title="Robot Financiero | Yahoo-style", css=CSS) as demo:
             md_c = gr.Markdown()
 
         with gr.Tab("💬 Asistente"):
-            chat = gr.Chatbot(type="messages", height=400)
+            chat = gr.Chatbot(height=400)
             msg = gr.Textbox(label="Pregunta", placeholder="¿Por qué la simulación dio ese resultado?")
             with gr.Row():
                 btn_send = gr.Button("Enviar", variant="primary")
