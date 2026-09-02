@@ -1,6 +1,11 @@
+# -*- coding: utf-8 -*-
+"""app.py
 
+Robot Financiero Inteligente con integración completa de Google Gemini (google-genai).
+"""
 
 # BLOQUE 1 — Librerías y configuración visual (estilo Yahoo Finance)
+import os
 import warnings
 from datetime import date, timedelta
 import numpy as np
@@ -8,6 +13,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import gradio as gr
 import yfinance as yf
+import numpy_financial as npf
+
+# Intentar importar el SDK oficial de Google GenAI
+try:
+    from google import genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    GENAI_AVAILABLE = False
 
 warnings.filterwarnings("ignore")
 plt.rcParams["figure.facecolor"] = "#0B0E11"
@@ -40,7 +53,7 @@ ANIOS = [str(a) for a in range(ANIO_ACTUAL, 2014, -1)]
 
 print("✅ BLOQUE 1 listo")
 
-# BLOQUE 2 — Catálogo (mismas empresas)
+# BLOQUE 2 — Catálogo
 CATALOGO = {
     "AAPL": "Apple Inc.", "MSFT": "Microsoft Corporation", "GOOGL": "Alphabet Inc. (Google)",
     "AMZN": "Amazon.com Inc.", "META": "Meta Platforms Inc.", "NVDA": "NVIDIA Corporation",
@@ -235,20 +248,12 @@ def conversion_tasas(tasa, m_or, m_des, tipo="nominal"):
     return ef, nom, efd
 
 def calcular_tir(flujos):
-    f = np.array(flujos, dtype=float)
+    f = [float(x) for x in flujos]
     if len(f) < 2:
         raise ValueError("Mínimo 2 flujos")
-    tir = 0.1
-    for _ in range(80):
-        npv = sum(x / (1 + tir) ** t for t, x in enumerate(f))
-        d = sum(-t * x / (1 + tir) ** (t + 1) for t, x in enumerate(f))
-        if abs(d) < 1e-14:
-            break
-        n = tir - npv / d
-        if abs(n - tir) < 1e-10:
-            tir = n
-            break
-        tir = n
+    tir = npf.irr(f)
+    if np.isnan(tir):
+        raise ValueError("No converge la TIR con estos flujos")
     return float(tir)
 
 def calcular_van(flujos, tasa):
@@ -360,28 +365,22 @@ def seis_riesgos(m=None, razones=None, sector="N/D"):
     m, razones = m or {}, razones or {}
     vol, rc, end, roe = m.get("volatilidad_anual"), razones.get("razon_corriente"), razones.get("endeudamiento"), razones.get("roe")
     out = {}
-    # 1 mercado
     if vol is None:
         out["mercado"] = ("medio", "Sin precios")
     else:
         out["mercado"] = ("alto" if vol > 0.45 else "medio" if vol > 0.25 else "bajo", f"Vol {vol*100:.1f}%")
-    # 2 crédito
     if end is None:
         out["credito"] = ("medio", "Sin endeudamiento")
     else:
         out["credito"] = ("alto" if end > 0.7 else "medio" if end > 0.45 else "bajo", f"Deuda {end*100:.0f}%")
-    # 3 liquidez
     if rc is None:
         out["liquidez"] = ("medio", "Sin RC")
     else:
         out["liquidez"] = ("alto" if rc < 1 else "medio" if rc < 1.5 else "bajo", f"RC {rc:.2f}")
-    # 4 operacional
     sec = (sector or "").lower()
     alto = any(x in sec for x in ("energy", "retail", "auto", "airline"))
     out["operacional"] = ("medio" if alto else "bajo", f"Sector {sector}")
-    # 5 legal
     out["legal"] = ("medio", "Regulación de valores / sector")
-    # 6 reputacional
     out["reputacional"] = ("medio" if (roe is not None and roe < 0) else "bajo", "Según ROE y señales")
     return out
 
@@ -438,7 +437,7 @@ def simulacion_decision(mu, sigma, n=2000, umbral=0.30, horizonte=252):
 
 print("✅ BLOQUE 6 listo")
 
-# BLOQUE 7 — Integrado, IA (respaldo) y chatbot
+# BLOQUE 7 — Integrado, IA (Google Gemini) y chatbot
 def analisis_integrado(diag, pack_riesgo):
     razones = (diag or {}).get("razones") or {}
     z_info = (diag or {}).get("z_info") or {}
@@ -475,31 +474,57 @@ def analisis_integrado(diag, pack_riesgo):
 
 | Clave | Valor |
 | :--- | :---: |
-| Z Altman | {z} |
-| Zona Z | {z_info.get('zona')} |
-| Razón corriente | {rc} |
-| ROE | {roe} |
-| Endeudamiento | {end} |
-| Volatilidad | {vol} |
+| Z Altman | {z:.2f if isinstance(z, (int, float)) else 'N/D'} |
+| Zona Z | {z_info.get('zona', 'N/D')} |
+| Razón corriente | {rc:.2f if isinstance(rc, (int, float)) else 'N/D'} |
+| ROE | {f'{roe*100:.2f}%' if isinstance(roe, (int, float)) else 'N/D'} |
+| Endeudamiento | {f'{end*100:.2f}%' if isinstance(end, (int, float)) else 'N/D'} |
+| Volatilidad | {f'{vol*100:.2f}%' if isinstance(vol, (int, float)) else 'N/D'} |
 """
-    return {"clasificacion": clasif, "score": score, "texto_md": md, "z_info": z_info}
+    return {"clasificacion": clasif, "score": score, "texto_md": md, "z_info": z_info, "razones": razones}
 
 def analisis_ia(integ, sim):
+    api_key = os.getenv("GEMINI_API_KEY")
     c = (integ or {}).get("clasificacion", "N/D")
+    score = (integ or {}).get("score", 0)
     d = (sim or {}).get("decision", "N/D")
     p = (sim or {}).get("probabilidad_desfavorable")
     r = (sim or {}).get("retorno_esperado")
-    return f"""### Panel IA (modo respaldo)
+    
+    if not api_key:
+        return f"""### Panel IA (Modo respaldo sin API Key)
 
-No hay `OPENAI_API_KEY` configurada en Colab. Resultados cuantitativos:
+* **Clasificación integrada:** {c} (Score: {score:.1f}/100)
+* **Decisión Montecarlo:** {d}
+* **P(desfavorable):** {(p*100 if p is not None else 0):.1f}%
+* **Retorno esperado:** {(r*100 if r is not None else 0):.1f}%
 
-- Clasificación integrada: **{c}**
-- Decisión simulación: **{d}**
-- P(desfavorable): **{(p*100 if p is not None else 'N/D')}%**
-- Retorno esperado: **{(r*100 if r is not None else 'N/D')}%**
+> *Configura GEMINI_API_KEY en Environment de Render para análisis generativo en tiempo real.*"""
 
-> Para IA real: Runtime → Secrets o `os.environ['OPENAI_API_KEY']=...`
-"""
+    if not GENAI_AVAILABLE:
+        return "⚠️ Falta instalar el paquete `google-genai`. Añádelo a requirements.txt."
+
+    prompt = f"""
+    Actúa como asesor y analista financiero cuantitativo senior. Genera una conclusión ejecutiva estructurada (máximo 3 párrafos breves) con los siguientes datos:
+    - Estado de solvencia/salud: {c} (Score: {score:.1f}/100)
+    - Recomendación de simulación Montecarlo: {d}
+    - Probabilidad de pérdida proyectada: {(p*100 if p is not None else 0):.1f}%
+    - Rendimiento esperado proyectado: {(r*100 if r is not None else 0):.1f}%
+
+    Estructura la respuesta:
+    1. **Diagnóstico Integral:** Evalúa la solidez, liquidez y riesgo de quiebra.
+    2. **Perfil Riesgo-Rendimiento:** Interpreta la probabilidad de pérdida frente al retorno.
+    3. **Recomendación Accionable:** Decisión fundamentada de inversión o reestructuración.
+    """
+    try:
+        client = genai.Client(api_key=api_key)
+        res = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        return "### 🤖 Diagnóstico Financiero con Gemini\n\n" + res.text
+    except Exception as e:
+        return f"Error al generar informe con Gemini: {e}"
 
 CONCEPTOS = {
     "wacc": "WACC = costo promedio de deuda y equity. Rentabilidad mínima para no destruir valor.",
@@ -520,22 +545,47 @@ CONCEPTOS = {
 
 def chatbot_responder(pregunta, contexto=None):
     if not pregunta or not str(pregunta).strip():
-        return "Pregunta por WACC, EVA, Z de Altman, VaR, Montecarlo o tus resultados."
-    q = pregunta.lower()
+        return "Escribe una pregunta sobre la empresa analizada, finanzas corporativas o métricas."
+    
+    api_key = os.getenv("GEMINI_API_KEY")
     contexto = contexto or {}
-    for k, v in CONCEPTOS.items():
-        if k in q:
-            return f"**{k.upper()}**\n\n{v}"
-    if any(x in q for x in ("zona", "riesgo", "altman", "quiebra")):
-        zi = contexto.get("z_info") or {}
-        if zi:
-            return f"Z de Altman: **{zi.get('zona','N/D')}**\n\n{zi.get('rec','')}"
-        if contexto.get("clasificacion"):
-            return f"Clasificación integrada: **{contexto['clasificacion']}**"
-    if "decisión" in q or "decision" in q or "simula" in q:
-        if contexto.get("decision"):
-            return f"La simulación recomendó: **{contexto['decision'].upper()}**"
-    return "Puedo explicar WACC, EVA, ROE, Z Altman, VaR, volatilidad, Montecarlo, TIR, VAN, CAPM, razón corriente, DuPont."
+    
+    if not api_key or not GENAI_AVAILABLE:
+        q = pregunta.lower()
+        for k, v in CONCEPTOS.items():
+            if k in q:
+                return f"**{k.upper()}**\n\n{v}"
+        if any(x in q for x in ("zona", "riesgo", "altman", "quiebra")):
+            zi = contexto.get("z_info") or {}
+            if zi:
+                return f"Z de Altman: **{zi.get('zona','N/D')}**\n\n{zi.get('rec','')}"
+            if contexto.get("clasificacion"):
+                return f"Clasificación integrada: **{contexto['clasificacion']}**"
+        if "decisión" in q or "decision" in q or "simula" in q:
+            if contexto.get("decision"):
+                return f"La simulación recomendó: **{contexto['decision'].upper()}**"
+        return "Modo básico activo. Puedes preguntar por WACC, EVA, ROE, Z Altman, VaR, TIR o VAN."
+
+    prompt = f"""
+    Eres un tutor y asesor financiero inteligente experto.
+    Contexto financiero actual de la sesión del usuario:
+    - Clasificación: {contexto.get('clasificacion', 'No calculada')}
+    - Decisión Montecarlo: {contexto.get('decision', 'No calculada')}
+    - Zona Z Altman: {((contexto.get('z_info') or {}).get('zona', 'N/D'))}
+
+    Pregunta del usuario: "{pregunta}"
+
+    Responde de forma clara, profesional, concisa y educativa en español. Si la consulta tiene que ver con los datos de la empresa cargada, fundamenta tu explicación con el contexto actual.
+    """
+    try:
+        client = genai.Client(api_key=api_key)
+        res = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        return res.text
+    except Exception as e:
+        return f"Error en el asistente: {e}"
 
 print("✅ BLOQUE 7 listo")
 
@@ -738,7 +788,7 @@ def chat_ui(hist, msg, ctx):
 
 print("✅ BLOQUE 8 listo")
 
-# BLOQUE 9 — UI estilo Yahoo Finance y lanzamiento (Colab)
+# BLOQUE 9 — UI estilo Yahoo Finance y lanzamiento
 CSS = """
 .gradio-container { background: #0B0E11 !important; color: #EAECEF !important; font-family: Inter, system-ui, sans-serif !important; }
 .dark, .gr-block, .gr-form, .gr-panel { background: #0B0E11 !important; }
@@ -752,7 +802,7 @@ with gr.Blocks(title="Robot Financiero | Yahoo-style", css=CSS) as demo:
         <div style="width:36px;height:36px;border-radius:8px;background:#3861FB;display:flex;align-items:center;justify-content:center;font-weight:800;color:white;">RF</div>
         <div>
           <div style="font-size:20px;font-weight:700;color:#EAECEF;letter-spacing:-0.3px;">Robot Financiero Inteligente</div>
-          <div style="font-size:12px;color:#848E9C;">Diagnóstico · Riesgo · Datos Yahoo Finance · Simulación · IA</div>
+          <div style="font-size:12px;color:#848E9C;">Diagnóstico · Riesgo · Datos Yahoo Finance · Simulación · IA Gemini</div>
         </div>
       </div>
     </div>
@@ -761,6 +811,7 @@ with gr.Blocks(title="Robot Financiero | Yahoo-style", css=CSS) as demo:
     st_precios, st_tickers = gr.State(None), gr.State([])
     st_diag, st_riesgo, st_sim = gr.State({}), gr.State({}), gr.State({})
     st_sector, st_ctx = gr.State("N/D"), gr.State({})
+    st_m0, st_integ_state = gr.State({}), gr.State({})
 
     with gr.Tabs():
         with gr.Tab("📈 Mercado"):
@@ -839,24 +890,23 @@ with gr.Blocks(title="Robot Financiero | Yahoo-style", css=CSS) as demo:
             md_c = gr.Markdown()
 
         with gr.Tab("💬 Asistente"):
-            chat = gr.Chatbot(height=400)
-            msg = gr.Textbox(label="Pregunta", placeholder="¿Qué es el Z de Altman?")
+            chat = gr.Chatbot(type="messages", height=400)
+            msg = gr.Textbox(label="Pregunta", placeholder="¿Por qué la simulación dio ese resultado?")
             with gr.Row():
                 btn_send = gr.Button("Enviar", variant="primary")
                 btn_clr = gr.Button("Limpiar")
 
-    btn_mkt.click(pipeline_mercado, [sel_emp, sel_anio], [plot_p, plot_r, md_mkt, st_precios, st_tickers, gr.State()])
+    btn_mkt.click(pipeline_mercado, [sel_emp, sel_anio], [plot_p, plot_r, md_mkt, st_precios, st_tickers, st_m0])
     btn_inv.click(simular_inv, [st_precios, st_tickers, monto, s1, s2, s3, s4, s5, sel_anio], md_inv)
     btn_load.click(cargar_estados, sel_d, [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, md_load, st_sector])
     btn_diag.click(run_diag, [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm], [md_diag, st_diag])
     btn_risk.click(run_riesgo, [st_precios, st_tickers, st_diag, st_sector], [md_risk, st_riesgo, plot_h])
     btn_sim.click(run_sim, [st_riesgo, n_esc, umbral], [md_sim, st_sim, plot_mc])
-    btn_int.click(run_integ, [st_diag, st_riesgo, st_sim], [md_int, gr.State(), md_ia, st_ctx])
+    btn_int.click(run_integ, [st_diag, st_riesgo, st_sim], [md_int, st_integ_state, md_ia, st_ctx])
     btn_c.click(run_calc, [tipo, v1, v2, v3, v4, v5], md_c)
     btn_send.click(chat_ui, [chat, msg, st_ctx], [chat, msg])
     msg.submit(chat_ui, [chat, msg, st_ctx], [chat, msg])
     btn_clr.click(lambda: [], outputs=chat)
 
-import os
 port = int(os.environ.get("PORT", 7860))
 demo.launch(server_name="0.0.0.0", server_port=port)
