@@ -1,0 +1,6 @@
+gradio
+yfinance
+pandas
+numpy
+matplotlib
+numpy-financial
