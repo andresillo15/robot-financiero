@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
 """app.py
 
-Robot Financiero Inteligente — Versión completa y corregida con:
-- Integración de Google Gemini (google-genai) en Diagnóstico, Análisis Integrado y Asistente
-- Generación de reportes PDF con ReportLab
-- Calculadora financiera completa con visualizaciones gráficas
-- Diagnóstico, Razón Corriente, Z-Altman, 6 Riesgos y Simulación Monte Carlo
-- Compatibilidad de Gradio (formato de tuplas en Chatbot) y puerto dinámico para Render
+Robot Financiero Inteligente — Versión final corregida para Gradio (formato messages en Chatbot),
+integración de Google Gemini (google-genai) y despliegue en Render.
 """
 
 import os
@@ -22,8 +18,6 @@ import matplotlib.pyplot as plt
 import gradio as gr
 import yfinance as yf
 import numpy_financial as npf
-import re as _re
-import unicodedata as _ud
 
 # Intentar importar Google GenAI
 try:
@@ -151,11 +145,6 @@ def ticker_de(opcion):
 def nombre_de(ticker):
     return CATALOGO.get(ticker, ticker or "Empresa manual")
 
-def _etiqueta_periodo(periodo, anio=None):
-    if anio and str(anio) not in ("", "Automático (usar periodo)"):
-        return f"Año {anio}"
-    return periodo
-
 def descargar_precios(opciones, periodo="1 año", anio=None):
     if not opciones:
         raise ValueError("Selecciona entre 1 y 5 empresas.")
@@ -244,7 +233,7 @@ def estados_yahoo(ticker):
         vacio["mensaje"] = f"⚠️ Error al cargar {ticker}: {e}."
         return vacio
 
-# BLOQUE CALCULADORA
+# CÁLCULOS FINANCIEROS
 def _pos(v, nom="Valor"):
     v = float(v)
     if v <= 0: raise ValueError(f"{nom} debe ser > 0")
@@ -268,19 +257,6 @@ def interes_compuesto(c, r, n):
     m = c * (1 + r) ** n
     return m - c, m
 
-def valor_futuro(vp, r, n): return _pos(vp, "VP") * (1 + _tasa(r)) ** _pos(n, "n")
-def valor_presente(vf, r, n): return _pos(vf, "VF") / (1 + _tasa(r)) ** _pos(n, "n")
-
-def vp_anualidad(cuota, r, n, tipo="ordinaria"):
-    cuota, r, n = _pos(cuota, "Cuota"), _tasa(r), _pos(n, "n")
-    f = n if abs(r) < 1e-12 else (1 - (1 + r) ** (-n)) / r
-    return cuota * f * (1 + r if tipo == "anticipada" else 1)
-
-def vf_anualidad(cuota, r, n, tipo="ordinaria"):
-    cuota, r, n = _pos(cuota, "Cuota"), _tasa(r), _pos(n, "n")
-    f = n if abs(r) < 1e-12 else ((1 + r) ** n - 1) / r
-    return cuota * f * (1 + r if tipo == "anticipada" else 1)
-
 def tabla_amortizacion(c, r, n):
     c, r, n = _pos(c, "Capital"), _tasa(r), int(_pos(n, "n"))
     cuota = c / n if abs(r) < 1e-12 else c * (r * (1 + r) ** n) / ((1 + r) ** n - 1)
@@ -292,13 +268,6 @@ def tabla_amortizacion(c, r, n):
         filas.append({"Periodo": i, "Cuota": cuota, "Interés": inte, "Amortización": amort, "Saldo": saldo})
     return pd.DataFrame(filas), cuota
 
-def conversion_tasas(tasa, m_or, m_des, tipo="nominal"):
-    tasa, m_or, m_des = _tasa(tasa), int(_pos(m_or)), int(_pos(m_des))
-    ef = (1 + tasa / m_or) ** m_or - 1 if tipo == "nominal" else tasa
-    nom = m_des * ((1 + ef) ** (1 / m_des) - 1)
-    efd = (1 + nom / m_des) ** m_des - 1
-    return ef, nom, efd
-
 def calcular_tir(flujos):
     f = [float(x) for x in flujos]
     tir = npf.irr(f)
@@ -306,16 +275,12 @@ def calcular_tir(flujos):
     return float(tir)
 
 def calcular_van(flujos, tasa): return float(sum(x / (1 + _tasa(tasa)) ** t for t, x in enumerate(flujos)))
-def calcular_capm(rf, beta, rm): return _tasa(rf) + float(beta) * (_tasa(rm) - _tasa(rf))
 def calcular_wacc(ke, kd, e, d, tax):
     ke, kd, e, d = _tasa(ke), _tasa(kd), _pos(e, "E"), max(0.0, float(d))
     tax = max(0.0, min(1.0, float(tax)))
     v = e + d
     return (e / v) * ke + (d / v) * kd * (1 - tax)
 
-def calcular_eva(nopat, wacc, capital): return float(nopat) - _tasa(wacc) * _pos(capital, "Capital")
-
-# BLOQUE DIAGNÓSTICO
 def calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre_empresa="Empresa"):
     ac, pc, inv = float(ac or 0), float(pc or 0), float(inv or 0)
     un, ven, at = float(un or 0), float(ven or 0), float(at or 0)
@@ -330,9 +295,7 @@ def calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre_e
     roa_v = None if at == 0 else un / at
     roe_v = None if pat == 0 else un / pat
     end = None if at == 0 else pt / at
-    mult = None if pat == 0 else at / pat
-    rot = None if at == 0 else ven / at
-    dupont = None if None in (mn, rot, mult) else mn * rot * mult
+    dupont = None if None in (mn, (ven/at if at else None), (at/pat if pat else None)) else (un/pat)
 
     z = None
     if at > 0 and pt > 0:
@@ -363,34 +326,19 @@ def calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre_e
     razones = {"razon_corriente": rc, "prueba_acida": pa, "ktn": ktn, "margen_neto": mn, "roa": roa_v, "roe": roe_v, "endeudamiento": end, "dupont": dupont, "z": z}
     return {"razones": razones, "z_info": z_info, "texto_md": md, "nombre": nombre_empresa}
 
-# BLOQUE RIESGO Y MONTE CARLO
 def metricas_mercado(serie, nombre="Activo"):
     s = serie.dropna()
-    if len(s) < 10: raise ValueError("Pocos datos de precio para análisis de volatilidad.")
+    if len(s) < 10: raise ValueError("Pocos datos de precio.")
     ret = s.pct_change().dropna()
     mu, sig = float(ret.mean()), float(ret.std(ddof=1))
     vol_a = sig * np.sqrt(252)
     return {
         "nombre": nombre, "mu_diario": mu, "sigma_diario": sig,
-        "volatilidad_anual": vol_a, "coeficiente_variacion": abs(vol_a / (mu * 252)) if abs(mu) > 1e-12 else 0,
-        "var_1d_95": -(mu - 1.65 * sig), "var_1d_99": -(mu - 2.33 * sig),
-        "max_drawdown": float((s / s.cummax() - 1).min()), "retorno_total": float(s.iloc[-1] / s.iloc[0] - 1),
+        "volatilidad_anual": vol_a, "retorno_total": float(s.iloc[-1] / s.iloc[0] - 1),
         "retornos": ret, "serie": s
     }
 
-def seis_riesgos(m=None, razones=None, sector="N/D"):
-    m, razones = m or {}, razones or {}
-    vol, rc, end, roe = m.get("volatilidad_anual"), razones.get("razon_corriente"), razones.get("endeudamiento"), razones.get("roe")
-    out = {}
-    out["mercado"] = ("alto" if vol and vol > 0.45 else "medio" if vol and vol > 0.25 else "bajo", f"Vol {vol*100:.1f}%" if vol else "N/D")
-    out["credito"] = ("alto" if end and end > 0.7 else "medio" if end and end > 0.45 else "bajo", f"Deuda {end*100:.0f}%" if end else "N/D")
-    out["liquidez"] = ("alto" if rc and rc < 1 else "medio" if rc and rc < 1.5 else "bajo", f"RC {rc:.2f}" if rc else "N/D")
-    out["operacional"] = ("medio" if any(x in (sector or "").lower() for x in ("energy", "retail", "auto", "airline")) else "bajo", f"Sector {sector}")
-    out["legal"] = ("medio", "Regulación de mercados")
-    out["reputacional"] = ("medio" if (roe is not None and roe < 0) else "bajo", "Basado en rentabilidad")
-    return out
-
-def simulacion_decision(mu, sigma, n=2000, umbral=0.30, horizonte=252):
+def simulacion_decision(mu=0.0005, sigma=0.015, n=2000, umbral=0.30, horizonte=252):
     rng = np.random.default_rng(42)
     shocks = rng.normal(mu, sigma, size=(int(n), int(horizonte)))
     dist = np.prod(1 + shocks, axis=1) - 1
@@ -399,14 +347,12 @@ def simulacion_decision(mu, sigma, n=2000, umbral=0.30, horizonte=252):
     detalle = f"**Decisión Simulación:** {decision.upper()}\n\n- Probabilidad de pérdida proyectada: {p_bad*100:.1f}%\n- Rendimiento anual esperado: {ret_e*100:.2f}%"
     return {"decision": decision, "probabilidad_desfavorable": p_bad, "retorno_esperado": ret_e, "distribucion": dist, "detalle": detalle}
 
-# BLOQUE ANÁLISIS INTEGRADO & IA
 def analisis_integrado(diag, pack_riesgo):
     razones = (diag or {}).get("razones") or {}
     z_info = (diag or {}).get("z_info") or {}
-    m = (pack_riesgo or {}).get("metricas") or {}
     nombre = (diag or {}).get("nombre") or "Empresa"
     score = 50.0
-    z, rc, end, roe, vol = razones.get("z"), razones.get("razon_corriente"), razones.get("endeudamiento"), razones.get("roe"), m.get("volatilidad_anual")
+    z, rc, end, roe = razones.get("z"), razones.get("razon_corriente"), razones.get("endeudamiento"), razones.get("roe")
     if z is not None: score += 20 if z > 2.99 else (5 if z >= 1.81 else -25)
     if rc is not None: score += 10 if rc >= 1.5 else (-15 if rc < 1 else 0)
     if end is not None: score += -15 if end > 0.7 else (-5 if end > 0.45 else 5)
@@ -448,7 +394,6 @@ def analisis_ia_gemini(integ, sim):
     except Exception as e:
         return f"Error al generar informe con Gemini: {e}"
 
-# ASISTENTE EXPLICATIVO
 CONCEPTOS = {
     "wacc": "WACC es el costo promedio ponderado de capital. Es la rentabilidad mínima que debe generar la empresa para no destruir valor.",
     "eva": "EVA (Valor Económico Agregado). EVA > 0 crea valor; EVA < 0 destruye valor.",
@@ -470,13 +415,14 @@ def chatbot_responder(pregunta, contexto=None):
     return "Puedo explicarte conceptos financieros o interpretar tus resultados. Pregunta por WACC, EVA, ROE o Z de Altman."
 
 def chat_ui(hist, msg, ctx):
-    if not msg or not str(msg).strip(): return hist, ""
+    if not msg or not str(msg).strip():
+        return hist, ""
     resp = chatbot_responder(msg, ctx or {})
     hist = list(hist or [])
-    hist.append((msg, resp))
+    hist.append({"role": "user", "content": str(msg)})
+    hist.append({"role": "assistant", "content": str(resp)})
     return hist, ""
 
-# PDF
 def generar_reporte_pdf(nombre, diag, pack, sim, integ):
     if not REPORTLAB_OK: return None, "ReportLab no está disponible."
     buf = io.BytesIO()
@@ -499,7 +445,6 @@ def generar_reporte_pdf(nombre, diag, pack, sim, integ):
     with open(path, "wb") as f: f.write(buf.getvalue())
     return path, "✅ PDF generado correctamente."
 
-# WRAPPERS UI
 def pipeline_mercado(opciones, periodo, anio):
     try:
         precios = descargar_precios(opciones, periodo, anio)
