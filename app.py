@@ -1,13 +1,8 @@
 # -*- coding: utf-8 -*-
 """app.py
 
-Robot Financiero Inteligente — Versión final completa con:
-- Integración dual y diagnóstica de Google Gemini (google-genai / google-generativeai)
-- Diagnóstico financiero integral (Altman Z-Score, DuPont, liquidez y solvencia)
-- Análisis de mercado, 6 riesgos empresariales y simulación Monte Carlo
-- Calculadora financiera interactiva (interés, amortización, TIR, VAN, WACC, EVA)
-- Generación de reportes ejecutivos en PDF con ReportLab
-- Configuración de host y puerto dinámico para despliegue en Render
+Robot Financiero Inteligente — Versión actualizada con el modelo gemini-3.6-flash,
+ReportLab para PDF, cálculos cuantitativos y asistente conversacional avanzado.
 """
 
 import os
@@ -66,17 +61,17 @@ plt.rcParams.update({
 })
 
 # ============================================================
-# ASISTENTE CONVERSACIONAL Y MOTOR GEMINI ROBUSTO
+# ASISTENTE CONVERSACIONAL Y MOTOR GEMINI (gemini-3.6-flash)
 # ============================================================
 
 SYSTEM_PROMPT_FINANIA = """
 Eres FinanIA, un analista financiero sénior, consultor cuantitativo y asesor corporativo experto.
-Tu objetivo es responder como un tutor y colaborador de alto nivel: reflexivo, pedagógico, agudo, técnico pero cercano y empático.
+Tu objetivo es responder como un tutor y colaborador de alto nivel: reflexivo, pedagógico, técnico, claro y empático.
 
 Reglas clave para tus respuestas:
-1. No des respuestas genéricas ni de una sola línea. Desarrolla explicaciones con sustancia y estructura clara (usa viñetas, tablas comparativas o negritas).
+1. No des respuestas genéricas de una sola línea. Desarrolla explicaciones con sustancia y estructura clara (usa viñetas, tablas o negritas).
 2. Cuando el usuario pregunte por conceptos (WACC, ROE, TIR, VAN, Z-Altman, VaR, Monte Carlo, etc.):
-   - Explica el concepto y su fórmula conceptual sin rodeos.
+   - Explica el concepto y su fórmula conceptual.
    - Detalla CÓMO interpretarlo (qué significa si es alto/bajo/positivo/negativo).
    - Explica el IMPACTO en la toma de decisiones financieras o de inversión.
 3. Si en el contexto hay una empresa cargada o cálculos previos, fundamenta SIEMPRE tu análisis con esos números reales.
@@ -125,12 +120,12 @@ def responder_con_llm(historial_chat, pregunta_actual, contexto=None):
     error_sdk1 = None
     error_sdk2 = None
 
-    # Intento 1: SDK google-genai
+    # Intento 1: SDK google-genai con modelo gemini-3.6-flash
     try:
         from google import genai
         client = genai.Client(api_key=api_key)
         res = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt_completo,
         )
         if hasattr(res, "text") and res.text:
@@ -138,18 +133,18 @@ def responder_con_llm(historial_chat, pregunta_actual, contexto=None):
     except Exception as e1:
         error_sdk1 = str(e1)
 
-    # Intento 2: SDK google-generativeai
+    # Intento 2: SDK google-generativeai con modelo gemini-3.6-flash
     try:
         import google.generativeai as gai
         gai.configure(api_key=api_key)
-        model = gai.GenerativeModel("gemini-2.5-flash")
+        model = gai.GenerativeModel("gemini-3.6-flash")
         res = model.generate_content(prompt_completo)
         if hasattr(res, "text") and res.text:
             return res.text
     except Exception as e2:
         error_sdk2 = str(e2)
 
-    return f"⚠️ Error al conectar con Gemini:\n- Error SDK 1: {error_sdk1}\n- Error SDK 2: {error_sdk2}\n\nVerifica que la clave en Render sea válida."
+    return f"⚠️ Error al conectar con Gemini:\n- Error SDK 1: {error_sdk1}\n- Error SDK 2: {error_sdk2}"
 
 def chatbot_responder(historial, pregunta, contexto=None):
     if not pregunta or not str(pregunta).strip():
@@ -443,12 +438,12 @@ def analisis_ia_gemini(integ, sim):
     3. **Recomendaciones Estratégicas:** Acciones concretas para mitigación de riesgos o decisiones de inversión.
     """
     
-    # Intento 1: SDK google-genai
+    # Intento 1: SDK google-genai (gemini-3.6-flash)
     try:
         from google import genai
         client = genai.Client(api_key=api_key)
         res = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
         )
         if hasattr(res, "text") and res.text:
@@ -456,11 +451,11 @@ def analisis_ia_gemini(integ, sim):
     except Exception:
         pass
 
-    # Intento 2: SDK google-generativeai
+    # Intento 2: SDK google-generativeai (gemini-3.6-flash)
     try:
         import google.generativeai as gai
         gai.configure(api_key=api_key)
-        model = gai.GenerativeModel("gemini-2.5-flash")
+        model = gai.GenerativeModel("gemini-3.6-flash")
         res = model.generate_content(prompt)
         if hasattr(res, "text") and res.text:
             return "### 🤖 Diagnóstico Financiero con Gemini\n\n" + res.text
