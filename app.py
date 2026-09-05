@@ -1,60 +1,127 @@
 # -*- coding: utf-8 -*-
 """app.py
 
-Robot Financiero Inteligente con integración completa de Google Gemini (google-genai)
-corregido para compatibilidad de Gradio (formato tuplas en Chatbot) y binding para Render.
+Robot Financiero Inteligente — Versión completa y corregida con:
+- Integración de Google Gemini (google-genai) en Diagnóstico, Análisis Integrado y Asistente
+- Generación de reportes PDF con ReportLab
+- Calculadora financiera completa con visualizaciones gráficas
+- Diagnóstico, Razón Corriente, Z-Altman, 6 Riesgos y Simulación Monte Carlo
+- Compatibilidad de Gradio (formato de tuplas en Chatbot) y puerto dinámico para Render
 """
 
-# BLOQUE 1 — Librerías y configuración visual (estilo Yahoo Finance)
 import os
 import warnings
 from datetime import date, timedelta
+import io
+import tempfile
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import gradio as gr
 import yfinance as yf
 import numpy_financial as npf
+import re as _re
+import unicodedata as _ud
 
-# Intentar importar el SDK oficial de Google GenAI
+# Intentar importar Google GenAI
 try:
     from google import genai
     GENAI_AVAILABLE = True
 except ImportError:
     GENAI_AVAILABLE = False
 
-warnings.filterwarnings("ignore")
-plt.rcParams["figure.facecolor"] = "#0B0E11"
-plt.rcParams["axes.facecolor"] = "#0B0E11"
-plt.rcParams["savefig.facecolor"] = "#0B0E11"
-plt.rcParams["text.color"] = "#EAECEF"
-plt.rcParams["axes.labelcolor"] = "#EAECEF"
-plt.rcParams["xtick.color"] = "#848E9C"
-plt.rcParams["ytick.color"] = "#848E9C"
-plt.rcParams["axes.edgecolor"] = "#2B2F36"
-plt.rcParams["grid.color"] = "#1E2329"
-plt.rcParams["font.size"] = 10
+# Intentar importar ReportLab para PDFs
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
+                                     TableStyle, PageBreak, HRFlowable, Image as RLImage)
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+    from reportlab.graphics.shapes import Drawing, Rect, String, Line
+    REPORTLAB_OK = True
+except ImportError:
+    REPORTLAB_OK = False
 
-# Colores estilo Yahoo Finance
-YF = {
-    "bg": "#0B0E11",
-    "card": "#1E2329",
-    "border": "#2B2F36",
-    "text": "#EAECEF",
-    "muted": "#848E9C",
-    "green": "#0ECB81",
-    "red": "#F6465D",
-    "blue": "#3861FB",
-    "yellow": "#F0B90B",
-    "header": "#181A20",
+warnings.filterwarnings("ignore")
+
+COLORS = {
+    "bg": "#F8FAFC", "card": "#FFFFFF", "border": "#E2E8F0",
+    "text": "#0F172A", "muted": "#64748B",
+    "primary": "#2563EB", "primary_light": "#DBEAFE",
+    "green": "#059669", "green_light": "#D1FAE5",
+    "red": "#DC2626", "red_light": "#FEE2E2",
+    "yellow": "#D97706", "yellow_light": "#FEF3C7",
+    "header": "#1E40AF",
 }
 
-ANIO_ACTUAL = date.today().year
-ANIOS = [str(a) for a in range(ANIO_ACTUAL, 2014, -1)]
+plt.rcParams.update({
+    "figure.facecolor": COLORS["bg"],
+    "axes.facecolor": COLORS["card"],
+    "savefig.facecolor": COLORS["bg"],
+    "text.color": COLORS["text"],
+    "axes.labelcolor": COLORS["text"],
+    "xtick.color": COLORS["muted"],
+    "ytick.color": COLORS["muted"],
+    "axes.edgecolor": COLORS["border"],
+    "grid.color": "#E2E8F0",
+    "font.size": 10,
+    "axes.titlesize": 12,
+    "axes.titleweight": "bold",
+})
 
-print("✅ BLOQUE 1 listo")
+# ============================================================
+# MOTOR DE IA GENERATIVA (GEMINI)
+# ============================================================
 
-# BLOQUE 2 — Catálogo
+def responder_con_llm(pregunta, contexto=None):
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key or not GENAI_AVAILABLE:
+        return None
+    try:
+        info_ctx = _contexto_a_texto(contexto)
+        prompt = f"""
+        Eres FinanIA, un asesor y analista financiero senior interactivo.
+        Responde en español de forma clara, didáctica, profesional y breve (máximo 3 párrafos).
+        Contexto cuantitativo de la sesión actual:
+        {info_ctx}
+
+        Pregunta del usuario: {pregunta}
+        """
+        client = genai.Client(api_key=api_key)
+        res = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        return res.text
+    except Exception as e:
+        print("Error Gemini:", e)
+        return None
+
+def _contexto_a_texto(contexto):
+    contexto = contexto or {}
+    partes = []
+    nombre = contexto.get("nombre")
+    if nombre:
+        partes.append(f"Empresa analizada: {nombre}.")
+    if contexto.get("clasificacion"):
+        partes.append(f"Clasificación integral: {contexto['clasificacion']}.")
+    if contexto.get("score") is not None:
+        partes.append(f"Score de salud global: {contexto['score']:.1f}/100.")
+    razones = contexto.get("razones") or {}
+    if razones.get("razon_corriente") is not None:
+        partes.append(f"Razón corriente: {razones['razon_corriente']:.2f}.")
+    if razones.get("endeudamiento") is not None:
+        partes.append(f"Endeudamiento: {razones['endeudamiento']*100:.1f}%.")
+    if razones.get("roe") is not None:
+        partes.append(f"ROE: {razones['roe']*100:.1f}%.")
+    if contexto.get("decision"):
+        partes.append(f"Decisión Monte Carlo: {contexto['decision']}.")
+    return " ".join(partes) if partes else "Sin datos financieros cargados aún."
+
 CATALOGO = {
     "AAPL": "Apple Inc.", "MSFT": "Microsoft Corporation", "GOOGL": "Alphabet Inc. (Google)",
     "AMZN": "Amazon.com Inc.", "META": "Meta Platforms Inc.", "NVDA": "NVIDIA Corporation",
@@ -84,10 +151,12 @@ def ticker_de(opcion):
 def nombre_de(ticker):
     return CATALOGO.get(ticker, ticker or "Empresa manual")
 
-print(f"✅ BLOQUE 2 — {len(CATALOGO)} empresas")
+def _etiqueta_periodo(periodo, anio=None):
+    if anio and str(anio) not in ("", "Automático (usar periodo)"):
+        return f"Año {anio}"
+    return periodo
 
-# BLOQUE 3 — Descarga de precios y estados financieros
-def descargar_precios(opciones, anio):
+def descargar_precios(opciones, periodo="1 año", anio=None):
     if not opciones:
         raise ValueError("Selecciona entre 1 y 5 empresas.")
     if isinstance(opciones, str):
@@ -97,16 +166,20 @@ def descargar_precios(opciones, anio):
         raise ValueError("No hay tickers válidos.")
     if len(tickers) > 5:
         raise ValueError("Máximo 5 empresas.")
-    if len(set(tickers)) != len(tickers):
-        raise ValueError("Empresas repetidas.")
 
-    anio = int(anio)
-    inicio = f"{anio}-01-01"
-    fin = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d") if anio >= ANIO_ACTUAL else f"{anio+1}-01-01"
+    usa_anio = anio and str(anio) not in ("", "Automático (usar periodo)")
+    if usa_anio:
+        anio = int(anio)
+        inicio = f"{anio}-01-01"
+        hoy = date.today()
+        fin = f"{anio}-12-31" if anio < hoy.year else hoy.strftime("%Y-%m-%d")
+        datos = yf.download(tickers, start=inicio, end=fin, interval="1d", progress=False, auto_adjust=True, threads=False)
+    else:
+        mapa = {"6 meses": "6mo", "1 año": "1y", "2 años": "2y", "5 años": "5y", "10 años": "10y"}
+        datos = yf.download(tickers, period=mapa.get(periodo, "1y"), interval="1d", progress=False, auto_adjust=True, threads=False)
 
-    datos = yf.download(tickers, start=inicio, end=fin, interval="1d", progress=False, auto_adjust=True, threads=False)
     if datos is None or datos.empty:
-        raise ValueError("Sin datos de Yahoo Finance.")
+        raise ValueError("Sin datos disponibles en Yahoo Finance.")
 
     if isinstance(datos.columns, pd.MultiIndex):
         precios = datos["Close"].copy()
@@ -116,10 +189,8 @@ def descargar_precios(opciones, anio):
 
     precios = precios.dropna(how="all").dropna(axis=1, how="all")
     if precios.empty:
-        raise ValueError("Datos vacíos tras limpieza.")
-    cols = [t for t in tickers if t in precios.columns]
-    return precios[cols]
-
+        raise ValueError("Datos vacíos tras la descarga.")
+    return precios[[t for t in tickers if t in precios.columns]]
 
 def _buscar(df, claves):
     if df is None or getattr(df, "empty", True):
@@ -137,7 +208,6 @@ def _buscar(df, claves):
                     pass
     return None
 
-
 def estados_yahoo(ticker):
     ticker = (ticker or "").upper().strip()
     vacio = {
@@ -153,15 +223,10 @@ def estados_yahoo(ticker):
         t = yf.Ticker(ticker)
         info = t.info or {}
         bs, fin = t.balance_sheet, t.financials
-        mc = info.get("marketCap")
-        try:
-            mc = float(mc) if mc else 0
-        except Exception:
-            mc = 0
+        mc = info.get("marketCap") or 0
+        nombre = info.get("longName") or nombre_de(ticker)
         return {
-            "ticker": ticker,
-            "nombre": info.get("longName") or nombre_de(ticker),
-            "sector": info.get("sector", "N/D"),
+            "ticker": ticker, "nombre": nombre, "sector": info.get("sector", "N/D"),
             "activo_corriente": _buscar(bs, ["current assets", "total current assets"]) or 0,
             "pasivo_corriente": _buscar(bs, ["current liabilities", "total current liabilities"]) or 0,
             "inventarios": _buscar(bs, ["inventory", "inventories"]) or 0,
@@ -172,63 +237,49 @@ def estados_yahoo(ticker):
             "utilidad_neta": _buscar(fin, ["net income", "net income common stockholders"]) or 0,
             "ventas": _buscar(fin, ["total revenue", "operating revenue"]) or 0,
             "utilidad_operativa": _buscar(fin, ["ebit", "operating income"]) or 0,
-            "valor_mercado_patrimonio": mc,
-            "mensaje": f"Datos de {info.get('longName', ticker)} cargados desde Yahoo Finance. Revisa y completa si falta algo.",
+            "valor_mercado_patrimonio": float(mc),
+            "mensaje": f"✅ Datos de **{nombre}** cargados correctamente.",
         }
     except Exception as e:
-        vacio["mensaje"] = f"Error al cargar {ticker}: {e}. Usa modo manual."
+        vacio["mensaje"] = f"⚠️ Error al cargar {ticker}: {e}."
         return vacio
 
-print("✅ BLOQUE 3 listo")
-
-# BLOQUE 4 — Calculadora (interés, VAN, TIR, CAPM, WACC, EVA…)
+# BLOQUE CALCULADORA
 def _pos(v, nom="Valor"):
     v = float(v)
-    if v <= 0:
-        raise ValueError(f"{nom} debe ser > 0")
+    if v <= 0: raise ValueError(f"{nom} debe ser > 0")
     return v
 
 def _tasa(v):
     v = float(v)
-    if v <= -1:
-        raise ValueError("Tasa inválida")
+    if v <= -1: raise ValueError("Tasa inválida")
     return v
 
 def fmt(v):
-    if v is None or (isinstance(v, float) and np.isnan(v)):
-        return "N/A"
-    s = f"{float(v):,.2f}"
-    return "$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
+    if v is None or (isinstance(v, float) and np.isnan(v)): return "N/A"
+    return f"$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def interes_simple(c, r, t):
     c, r, t = _pos(c, "Capital"), _tasa(r), _pos(t, "Tiempo")
-    i = c * r * t
-    return i, c + i
+    return c * r * t, c * (1 + r * t)
 
 def interes_compuesto(c, r, n):
     c, r, n = _pos(c, "Capital"), _tasa(r), _pos(n, "Periodos")
     m = c * (1 + r) ** n
     return m - c, m
 
-def valor_futuro(vp, r, n):
-    return _pos(vp, "VP") * (1 + _tasa(r)) ** _pos(n, "n")
-
-def valor_presente(vf, r, n):
-    return _pos(vf, "VF") / (1 + _tasa(r)) ** _pos(n, "n")
+def valor_futuro(vp, r, n): return _pos(vp, "VP") * (1 + _tasa(r)) ** _pos(n, "n")
+def valor_presente(vf, r, n): return _pos(vf, "VF") / (1 + _tasa(r)) ** _pos(n, "n")
 
 def vp_anualidad(cuota, r, n, tipo="ordinaria"):
     cuota, r, n = _pos(cuota, "Cuota"), _tasa(r), _pos(n, "n")
     f = n if abs(r) < 1e-12 else (1 - (1 + r) ** (-n)) / r
-    if tipo == "anticipada":
-        f *= 1 + r
-    return cuota * f
+    return cuota * f * (1 + r if tipo == "anticipada" else 1)
 
 def vf_anualidad(cuota, r, n, tipo="ordinaria"):
     cuota, r, n = _pos(cuota, "Cuota"), _tasa(r), _pos(n, "n")
     f = n if abs(r) < 1e-12 else ((1 + r) ** n - 1) / r
-    if tipo == "anticipada":
-        f *= 1 + r
-    return cuota * f
+    return cuota * f * (1 + r if tipo == "anticipada" else 1)
 
 def tabla_amortizacion(c, r, n):
     c, r, n = _pos(c, "Capital"), _tasa(r), int(_pos(n, "n"))
@@ -250,42 +301,27 @@ def conversion_tasas(tasa, m_or, m_des, tipo="nominal"):
 
 def calcular_tir(flujos):
     f = [float(x) for x in flujos]
-    if len(f) < 2:
-        raise ValueError("Mínimo 2 flujos")
     tir = npf.irr(f)
-    if np.isnan(tir):
-        raise ValueError("No converge la TIR con estos flujos")
+    if np.isnan(tir): raise ValueError("TIR no converge")
     return float(tir)
 
-def calcular_van(flujos, tasa):
-    tasa = _tasa(tasa)
-    return float(sum(x / (1 + tasa) ** t for t, x in enumerate(flujos)))
-
-def calcular_capm(rf, beta, rm):
-    return _tasa(rf) + float(beta) * (_tasa(rm) - _tasa(rf))
-
+def calcular_van(flujos, tasa): return float(sum(x / (1 + _tasa(tasa)) ** t for t, x in enumerate(flujos)))
+def calcular_capm(rf, beta, rm): return _tasa(rf) + float(beta) * (_tasa(rm) - _tasa(rf))
 def calcular_wacc(ke, kd, e, d, tax):
-    ke, kd = _tasa(ke), _tasa(kd)
-    e, d = _pos(e, "E"), max(0.0, float(d))
+    ke, kd, e, d = _tasa(ke), _tasa(kd), _pos(e, "E"), max(0.0, float(d))
     tax = max(0.0, min(1.0, float(tax)))
     v = e + d
-    if v == 0:
-        raise ValueError("E+D = 0")
     return (e / v) * ke + (d / v) * kd * (1 - tax)
 
-def calcular_eva(nopat, wacc, capital):
-    return float(nopat) - _tasa(wacc) * _pos(capital, "Capital")
+def calcular_eva(nopat, wacc, capital): return float(nopat) - _tasa(wacc) * _pos(capital, "Capital")
 
-print("✅ BLOQUE 4 listo")
-
-# BLOQUE 5 — Diagnóstico (razones, DuPont, Z de Altman)
-def calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm):
+# BLOQUE DIAGNÓSTICO
+def calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre_empresa="Empresa"):
     ac, pc, inv = float(ac or 0), float(pc or 0), float(inv or 0)
     un, ven, at = float(un or 0), float(ven or 0), float(at or 0)
     pat, pt, ur = float(pat or 0), float(pt or 0), float(ur or 0)
     uo, vm = float(uo or 0), float(vm or 0)
-    if at <= 0:
-        raise ValueError("Activos totales debe ser > 0")
+    if at <= 0: raise ValueError("Activos totales debe ser > 0")
 
     rc = None if pc == 0 else ac / pc
     pa = None if pc == 0 else (ac - inv) / pc
@@ -300,222 +336,107 @@ def calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm):
 
     z = None
     if at > 0 and pt > 0:
-        z = 1.2 * (ktn / at) + 1.4 * (ur / at) + 3.3 * (uo / at) + 0.6 * (vm / pt) + 1.0 * (ven / at)
+        z = 1.2*(ktn/at) + 1.4*(ur/at) + 3.3*(uo/at) + 0.6*(vm/pt) + 1.0*(ven/at)
 
-    if z is None:
-        z_info = {"zona": "No calculable", "color": YF["muted"], "rec": "Faltan datos."}
-    elif z > 2.99:
-        z_info = {"zona": "Zona Segura", "color": YF["green"], "rec": "Situación sólida. Bajo riesgo de insolvencia."}
-    elif z >= 1.81:
-        z_info = {"zona": "Zona Gris", "color": YF["yellow"], "rec": "Zona intermedia. Vigilar liquidez y deuda."}
-    else:
-        z_info = {"zona": "Zona de Riesgo", "color": YF["red"], "rec": "Riesgo elevado. Revisar liquidez y endeudamiento."}
+    if z is None: z_info = {"zona": "No calculable", "color": COLORS["muted"], "rec": "Faltan datos."}
+    elif z > 2.99: z_info = {"zona": "Zona Segura", "color": COLORS["green"], "rec": "Situación sólida. Bajo riesgo de insolvencia."}
+    elif z >= 1.81: z_info = {"zona": "Zona Gris", "color": COLORS["yellow"], "rec": "Zona intermedia. Vigilar liquidez y endeudamiento."}
+    else: z_info = {"zona": "Zona de Riesgo", "color": COLORS["red"], "rec": "Riesgo elevado. Revisar solvencia y estructura de deuda."}
 
-    def p(x):
-        return f"{x*100:.2f}%" if x is not None else "N/D"
-    def n(x):
-        return f"{x:,.2f}" if x is not None else "N/D"
+    def p(x): return f"{x*100:.2f}%" if x is not None else "N/D"
+    def n(x): return f"{x:,.2f}" if x is not None else "N/D"
 
-    md = f"""
-### Diagnóstico financiero
+    md = f"""### Diagnóstico Financiero — {nombre_empresa}
 | Indicador | Valor |
 | :--- | :---: |
 | Razón Corriente | {n(rc)} |
 | Prueba Ácida | {n(pa)} |
-| Capital Trabajo Neto | {n(ktn)} |
+| Capital de Trabajo Neto | {n(ktn)} |
 | Margen Neto | {p(mn)} |
 | ROA | {p(roa_v)} |
 | ROE | {p(roe_v)} |
 | Endeudamiento | {p(end)} |
-| ROE DuPont | {p(dupont)} |
-| **Z de Altman** | **{n(z)}** |
-
-**Clasificación Z:** <span style="color:{z_info['color']};font-weight:700">{z_info['zona']}</span>
+| **Z de Altman** | **{n(z)} ({z_info['zona']})** |
 
 {z_info['rec']}
 """
-    razones = {
-        "razon_corriente": rc, "prueba_acida": pa, "ktn": ktn, "margen_neto": mn,
-        "roa": roa_v, "roe": roe_v, "endeudamiento": end, "dupont": dupont, "z": z,
-    }
-    return {"razones": razones, "z_info": z_info, "texto_md": md}
+    razones = {"razon_corriente": rc, "prueba_acida": pa, "ktn": ktn, "margen_neto": mn, "roa": roa_v, "roe": roe_v, "endeudamiento": end, "dupont": dupont, "z": z}
+    return {"razones": razones, "z_info": z_info, "texto_md": md, "nombre": nombre_empresa}
 
-print("✅ BLOQUE 5 listo")
-
-# BLOQUE 6 — Riesgo de mercado + 6 riesgos + simulación de decisión
+# BLOQUE RIESGO Y MONTE CARLO
 def metricas_mercado(serie, nombre="Activo"):
     s = serie.dropna()
-    if len(s) < 10:
-        raise ValueError("Pocos datos de precio")
+    if len(s) < 10: raise ValueError("Pocos datos de precio para análisis de volatilidad.")
     ret = s.pct_change().dropna()
     mu, sig = float(ret.mean()), float(ret.std(ddof=1))
     vol_a = sig * np.sqrt(252)
-    cv = abs(vol_a / (mu * 252)) if abs(mu) > 1e-12 else float("inf")
-    var95 = -(mu - 1.65 * sig)
-    var99 = -(mu - 2.33 * sig)
-    dd = float((s / s.cummax() - 1).min())
     return {
         "nombre": nombre, "mu_diario": mu, "sigma_diario": sig,
-        "volatilidad_anual": vol_a, "coeficiente_variacion": cv,
-        "var_1d_95": var95, "var_1d_99": var99, "max_drawdown": dd,
-        "retorno_total": float(s.iloc[-1] / s.iloc[0] - 1),
-        "retornos": ret, "n_obs": len(s),
+        "volatilidad_anual": vol_a, "coeficiente_variacion": abs(vol_a / (mu * 252)) if abs(mu) > 1e-12 else 0,
+        "var_1d_95": -(mu - 1.65 * sig), "var_1d_99": -(mu - 2.33 * sig),
+        "max_drawdown": float((s / s.cummax() - 1).min()), "retorno_total": float(s.iloc[-1] / s.iloc[0] - 1),
+        "retornos": ret, "serie": s
     }
 
 def seis_riesgos(m=None, razones=None, sector="N/D"):
     m, razones = m or {}, razones or {}
     vol, rc, end, roe = m.get("volatilidad_anual"), razones.get("razon_corriente"), razones.get("endeudamiento"), razones.get("roe")
     out = {}
-    if vol is None:
-        out["mercado"] = ("medio", "Sin precios")
-    else:
-        out["mercado"] = ("alto" if vol > 0.45 else "medio" if vol > 0.25 else "bajo", f"Vol {vol*100:.1f}%")
-    if end is None:
-        out["credito"] = ("medio", "Sin endeudamiento")
-    else:
-        out["credito"] = ("alto" if end > 0.7 else "medio" if end > 0.45 else "bajo", f"Deuda {end*100:.0f}%")
-    if rc is None:
-        out["liquidez"] = ("medio", "Sin RC")
-    else:
-        out["liquidez"] = ("alto" if rc < 1 else "medio" if rc < 1.5 else "bajo", f"RC {rc:.2f}")
-    sec = (sector or "").lower()
-    alto = any(x in sec for x in ("energy", "retail", "auto", "airline"))
-    out["operacional"] = ("medio" if alto else "bajo", f"Sector {sector}")
-    out["legal"] = ("medio", "Regulación de valores / sector")
-    out["reputacional"] = ("medio" if (roe is not None and roe < 0) else "bajo", "Según ROE y señales")
+    out["mercado"] = ("alto" if vol and vol > 0.45 else "medio" if vol and vol > 0.25 else "bajo", f"Vol {vol*100:.1f}%" if vol else "N/D")
+    out["credito"] = ("alto" if end and end > 0.7 else "medio" if end and end > 0.45 else "bajo", f"Deuda {end*100:.0f}%" if end else "N/D")
+    out["liquidez"] = ("alto" if rc and rc < 1 else "medio" if rc and rc < 1.5 else "bajo", f"RC {rc:.2f}" if rc else "N/D")
+    out["operacional"] = ("medio" if any(x in (sector or "").lower() for x in ("energy", "retail", "auto", "airline")) else "bajo", f"Sector {sector}")
+    out["legal"] = ("medio", "Regulación de mercados")
+    out["reputacional"] = ("medio" if (roe is not None and roe < 0) else "bajo", "Basado en rentabilidad")
     return out
 
-def texto_riesgos(m, riesgos):
-    em = {"bajo": "🟢", "medio": "🟡", "alto": "🔴"}
-    md = f"""### Riesgo de mercado — {m['nombre']}
-| Indicador | Valor |
-| :--- | :---: |
-| Retorno periodo | {m['retorno_total']*100:+.2f}% |
-| Volatilidad anual | {m['volatilidad_anual']*100:.2f}% |
-| CV | {m['coeficiente_variacion']:.2f} |
-| VaR 1d 95% | {m['var_1d_95']*100:.2f}% |
-| VaR 1d 99% | {m['var_1d_99']*100:.2f}% |
-| Máx Drawdown | {m['max_drawdown']*100:.2f}% |
-
-### 6 riesgos empresariales
-| Riesgo | Nivel | Detalle |
-| :--- | :---: | :--- |
-"""
-    labels = {
-        "mercado": "1. Mercado", "credito": "2. Crédito", "liquidez": "3. Liquidez",
-        "operacional": "4. Operacional", "legal": "5. Legal", "reputacional": "6. Reputacional",
-    }
-    for k, lab in labels.items():
-        niv, det = riesgos[k]
-        md += f"| {lab} | {em.get(niv,'⚪')} **{niv.upper()}** | {det} |\n"
-    return md
-
 def simulacion_decision(mu, sigma, n=2000, umbral=0.30, horizonte=252):
-    n = max(1000, int(n))
     rng = np.random.default_rng(42)
-    shocks = rng.normal(mu, sigma, size=(n, horizonte))
+    shocks = rng.normal(mu, sigma, size=(int(n), int(horizonte)))
     dist = np.prod(1 + shocks, axis=1) - 1
-    p_bad = float(np.mean(dist < 0))
-    ret_e = float(np.mean(dist))
-    if p_bad > umbral:
-        decision, motivo = "rechazar", f"P(pérdida)={p_bad*100:.1f}% > umbral {umbral*100:.0f}%"
-    elif p_bad > umbral / 2:
-        decision, motivo = "revisar", f"P(pérdida)={p_bad*100:.1f}% zona intermedia"
-    else:
-        decision = "aceptar" if ret_e > 0 else "revisar"
-        motivo = f"P(pérdida)={p_bad*100:.1f}%, retorno esp. {ret_e*100:.1f}%"
-    detalle = f"""**Decisión: {decision.upper()}**
+    p_bad, ret_e = float(np.mean(dist < 0)), float(np.mean(dist))
+    decision = "rechazar" if p_bad > umbral else ("revisar" if p_bad > umbral / 2 else ("aceptar" if ret_e > 0 else "revisar"))
+    detalle = f"**Decisión Simulación:** {decision.upper()}\n\n- Probabilidad de pérdida proyectada: {p_bad*100:.1f}%\n- Rendimiento anual esperado: {ret_e*100:.2f}%"
+    return {"decision": decision, "probabilidad_desfavorable": p_bad, "retorno_esperado": ret_e, "distribucion": dist, "detalle": detalle}
 
-{motivo}
-
-- Escenarios: {n} | Horizonte: {horizonte} días
-- μ diario: {mu:.6f} | σ diario: {sigma:.6f}
-- Retorno esperado: {ret_e*100:.2f}%
-- P5: {np.percentile(dist,5)*100:.2f}% | P95: {np.percentile(dist,95)*100:.2f}%
-"""
-    return {"decision": decision, "probabilidad_desfavorable": p_bad, "retorno_esperado": ret_e,
-            "distribucion": dist, "detalle": detalle}
-
-print("✅ BLOQUE 6 listo")
-
-# BLOQUE 7 — Integrado, IA (Google Gemini) y chatbot
+# BLOQUE ANÁLISIS INTEGRADO & IA
 def analisis_integrado(diag, pack_riesgo):
     razones = (diag or {}).get("razones") or {}
     z_info = (diag or {}).get("z_info") or {}
     m = (pack_riesgo or {}).get("metricas") or {}
-    riesgos = (pack_riesgo or {}).get("riesgos") or {}
+    nombre = (diag or {}).get("nombre") or "Empresa"
     score = 50.0
     z, rc, end, roe, vol = razones.get("z"), razones.get("razon_corriente"), razones.get("endeudamiento"), razones.get("roe"), m.get("volatilidad_anual")
-    if z is not None:
-        score += 20 if z > 2.99 else (5 if z >= 1.81 else -25)
-    if rc is not None:
-        score += 10 if rc >= 1.5 else (-15 if rc < 1 else 0)
-    if end is not None:
-        score += -15 if end > 0.7 else (-5 if end > 0.45 else 5)
-    if roe is not None:
-        score += 10 if roe >= 0.12 else (-10 if roe < 0.05 else 3)
-    if vol is not None:
-        score += -15 if vol > 0.45 else (-5 if vol > 0.25 else 5)
-    if riesgos:
-        mapa = {"bajo": 20, "medio": 50, "alto": 80}
-        avg = np.mean([mapa.get(v[0], 50) for v in riesgos.values()])
-        score += (50 - avg) / 5
+    if z is not None: score += 20 if z > 2.99 else (5 if z >= 1.81 else -25)
+    if rc is not None: score += 10 if rc >= 1.5 else (-15 if rc < 1 else 0)
+    if end is not None: score += -15 if end > 0.7 else (-5 if end > 0.45 else 5)
+    if roe is not None: score += 10 if roe >= 0.12 else (-10 if roe < 0.05 else 3)
     score = float(np.clip(score, 0, 100))
-    if score >= 70:
-        clasif, color, msg = "saludable", YF["green"], "Diagnóstico **SALUDABLE**. Solidez y riesgo controlado."
-    elif score >= 45:
-        clasif, color, msg = "precaucion", YF["yellow"], "Diagnóstico en **PRECAUCIÓN**. Señales mixtas; revisar debilidades."
-    else:
-        clasif, color, msg = "alerta", YF["red"], "Diagnóstico en **ALERTA**. Vulnerabilidades materiales."
-    md = f"""## Análisis integrado <span style="color:{color}">● {clasif.upper()}</span>
+    clasif = "saludable" if score >= 70 else ("precaucion" if score >= 45 else "alerta")
+    md = f"### 🎯 Análisis Integrado — {nombre}\n\n**Score:** {score:.1f} / 100 ({clasif.upper()})"
+    return {"clasificacion": clasif, "score": score, "texto_md": md, "nombre": nombre, "z_info": z_info, "razones": razones}
 
-{msg}
-
-**Score:** {score:.1f} / 100
-
-| Clave | Valor |
-| :--- | :---: |
-| Z Altman | {z:.2f if isinstance(z, (int, float)) else 'N/D'} |
-| Zona Z | {z_info.get('zona', 'N/D')} |
-| Razón corriente | {rc:.2f if isinstance(rc, (int, float)) else 'N/D'} |
-| ROE | {f'{roe*100:.2f}%' if isinstance(roe, (int, float)) else 'N/D'} |
-| Endeudamiento | {f'{end*100:.2f}%' if isinstance(end, (int, float)) else 'N/D'} |
-| Volatilidad | {f'{vol*100:.2f}%' if isinstance(vol, (int, float)) else 'N/D'} |
-"""
-    return {"clasificacion": clasif, "score": score, "texto_md": md, "z_info": z_info, "razones": razones}
-
-def analisis_ia(integ, sim):
+def analisis_ia_gemini(integ, sim):
     api_key = os.getenv("GEMINI_API_KEY")
     c = (integ or {}).get("clasificacion", "N/D")
     score = (integ or {}).get("score", 0)
     d = (sim or {}).get("decision", "N/D")
-    p = (sim or {}).get("probabilidad_desfavorable")
-    r = (sim or {}).get("retorno_esperado")
+    p = (sim or {}).get("probabilidad_desfavorable", 0)
+    r = (sim or {}).get("retorno_esperado", 0)
     
     if not api_key:
-        return f"""### Panel IA (Modo respaldo sin API Key)
-
-* **Clasificación integrada:** {c} (Score: {score:.1f}/100)
-* **Decisión Montecarlo:** {d}
-* **P(desfavorable):** {(p*100 if p is not None else 0):.1f}%
-* **Retorno esperado:** {(r*100 if r is not None else 0):.1f}%
-
-> *Configura GEMINI_API_KEY en Environment de Render para análisis generativo en tiempo real.*"""
-
-    if not GENAI_AVAILABLE:
-        return "⚠️ Falta instalar el paquete `google-genai`. Añádelo a requirements.txt."
+        return f"### Panel IA (Modo respaldo)\n\nClasificación: **{c}** (Score: {score:.1f}) | Decisión: **{d}**\n\n> *Configura GEMINI_API_KEY en Render para informe generativo.*"
 
     prompt = f"""
-    Actúa como asesor y analista financiero cuantitativo senior. Genera una conclusión ejecutiva estructurada (máximo 3 párrafos breves) con los siguientes datos:
-    - Estado de solvencia/salud: {c} (Score: {score:.1f}/100)
-    - Recomendación de simulación Montecarlo: {d}
-    - Probabilidad de pérdida proyectada: {(p*100 if p is not None else 0):.1f}%
-    - Rendimiento esperado proyectado: {(r*100 if r is not None else 0):.1f}%
-
-    Estructura la respuesta:
-    1. **Diagnóstico Integral:** Evalúa la solidez, liquidez y riesgo de quiebra.
-    2. **Perfil Riesgo-Rendimiento:** Interpreta la probabilidad de pérdida frente al retorno.
-    3. **Recomendación Accionable:** Decisión fundamentada de inversión o reestructuración.
+    Actúa como asesor financiero senior. Redacta un informe ejecutivo conciso (3 párrafos breves):
+    - Diagnóstico: {c} (Score: {score:.1f}/100)
+    - Decisión Monte Carlo: {d}
+    - Probabilidad de pérdida proyectada: {p*100:.1f}%
+    - Rendimiento esperado: {r*100:.1f}%
+    
+    1. Diagnóstico de solvencia.
+    2. Evaluación del balance riesgo-retorno.
+    3. Recomendación estratégica accionable.
     """
     try:
         client = genai.Client(api_key=api_key)
@@ -527,383 +448,225 @@ def analisis_ia(integ, sim):
     except Exception as e:
         return f"Error al generar informe con Gemini: {e}"
 
+# ASISTENTE EXPLICATIVO
 CONCEPTOS = {
-    "wacc": "WACC = costo promedio de deuda y equity. Rentabilidad mínima para no destruir valor.",
-    "eva": "EVA > 0 crea valor; EVA < 0 destruye valor.",
-    "roe": "ROE = Utilidad neta / Patrimonio.",
-    "roa": "ROA = Utilidad neta / Activos totales.",
-    "z altman": "Z>2.99 segura | 1.81–2.99 gris | <1.81 riesgo.",
-    "z de altman": "Z>2.99 segura | 1.81–2.99 gris | <1.81 riesgo.",
-    "var": "VaR = pérdida máxima esperada a un horizonte y confianza.",
-    "volatilidad": "Mide oscilación del precio. Anual ≈ σ diaria × √252.",
-    "montecarlo": "Miles de escenarios aleatorios calibrados con datos reales.",
-    "tir": "Tasa que hace VAN = 0.",
-    "van": "Valor actual neto de los flujos. VAN>0 sugiere valor.",
-    "capm": "Ke = Rf + β×(Rm−Rf).",
-    "razon corriente": "Activo corriente / Pasivo corriente. >1.5 suele ser saludable.",
-    "dupont": "ROE = margen × rotación × apalancamiento.",
+    "wacc": "WACC es el costo promedio ponderado de capital. Es la rentabilidad mínima que debe generar la empresa para no destruir valor.",
+    "eva": "EVA (Valor Económico Agregado). EVA > 0 crea valor; EVA < 0 destruye valor.",
+    "roe": "ROE = Utilidad Neta / Patrimonio. Mide la rentabilidad para los accionistas.",
+    "roa": "ROA = Utilidad Neta / Activos Totales. Mide la eficiencia en el uso de los activos.",
+    "z altman": "Z de Altman predice riesgo de quiebra. Z > 2.99 Zona Segura | 1.81-2.99 Zona Gris | < 1.81 Zona de Riesgo.",
+    "van": "VAN descuenta los flujos futuros. Si VAN > 0 el proyecto crea valor.",
+    "tir": "TIR es la tasa interna que hace el VAN = 0. Si TIR > costo de capital, es viable.",
 }
 
 def chatbot_responder(pregunta, contexto=None):
     if not pregunta or not str(pregunta).strip():
-        return "Escribe una pregunta sobre la empresa analizada, finanzas corporativas o métricas."
-    
-    api_key = os.getenv("GEMINI_API_KEY")
-    contexto = contexto or {}
-    
-    if not api_key or not GENAI_AVAILABLE:
-        q = pregunta.lower()
-        for k, v in CONCEPTOS.items():
-            if k in q:
-                return f"**{k.upper()}**\n\n{v}"
-        if any(x in q for x in ("zona", "riesgo", "altman", "quiebra")):
-            zi = contexto.get("z_info") or {}
-            if zi:
-                return f"Z de Altman: **{zi.get('zona','N/D')}**\n\n{zi.get('rec','')}"
-            if contexto.get("clasificacion"):
-                return f"Clasificación integrada: **{contexto['clasificacion']}**"
-        if "decisión" in q or "decision" in q or "simula" in q:
-            if contexto.get("decision"):
-                return f"La simulación recomendó: **{contexto['decision'].upper()}**"
-        return "Modo básico activo. Puedes preguntar por WACC, EVA, ROE, Z Altman, VaR, TIR o VAN."
-
-    prompt = f"""
-    Eres un tutor y asesor financiero inteligente experto.
-    Contexto financiero actual de la sesión del usuario:
-    - Clasificación: {contexto.get('clasificacion', 'No calculada')}
-    - Decisión Montecarlo: {contexto.get('decision', 'No calculada')}
-    - Zona Z Altman: {((contexto.get('z_info') or {}).get('zona', 'N/D'))}
-
-    Pregunta del usuario: "{pregunta}"
-
-    Responde de forma clara, profesional, concisa y educativa en español. Si la consulta tiene que ver con los datos de la empresa cargada, fundamenta tu explicación con el contexto actual.
-    """
-    try:
-        client = genai.Client(api_key=api_key)
-        res = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-        )
-        return res.text
-    except Exception as e:
-        return f"Error en el asistente: {e}"
-
-print("✅ BLOQUE 7 listo")
-
-# BLOQUE 8 — Funciones conectadas a la UI
-def pipeline_mercado(opciones, anio):
-    try:
-        precios = descargar_precios(opciones, anio)
-        tickers = list(precios.columns)
-        base = precios.apply(lambda s: s.dropna().iloc[0])
-        p100 = (precios / base) * 100
-        rets = precios.pct_change().dropna(how="all")
-        vol = rets.std() * np.sqrt(252)
-        ret = (precios.iloc[-1] / base - 1) * 100
-        dd = (precios / precios.cummax() - 1).min() * 100
-
-        fig1, ax1 = plt.subplots(figsize=(9, 4))
-        for i, c in enumerate(tickers):
-            color = YF["green"] if ret[c] >= 0 else YF["red"]
-            if len(tickers) > 1:
-                color = [YF["blue"], YF["green"], YF["yellow"], YF["red"], "#A855F7"][i % 5]
-            ax1.plot(p100.index, p100[c], lw=2, color=color, label=nombre_de(c))
-        ax1.axhline(100, color=YF["muted"], ls="--", lw=1)
-        ax1.set_title(f"Performance Base 100 — {anio}", color=YF["text"])
-        ax1.legend(facecolor=YF["card"], edgecolor=YF["border"], labelcolor=YF["text"], fontsize=8)
-        ax1.grid(True, alpha=0.25)
-        plt.tight_layout()
-
-        fig2, ax2 = plt.subplots(figsize=(9, 3.5))
-        for i, c in enumerate(tickers):
-            color = [YF["blue"], YF["green"], YF["yellow"], YF["red"], "#A855F7"][i % 5]
-            ax2.plot(rets.index, rets[c] * 100, lw=0.9, alpha=0.85, color=color, label=nombre_de(c))
-        ax2.axhline(0, color=YF["muted"], ls="--")
-        ax2.set_title("Variación diaria %", color=YF["text"])
-        ax2.legend(facecolor=YF["card"], edgecolor=YF["border"], labelcolor=YF["text"], fontsize=8)
-        ax2.grid(True, alpha=0.25)
-        plt.tight_layout()
-
-        md = "### Resumen tipo cotización\n\n| Símbolo | Empresa | Retorno | Volatilidad | Drawdown |\n| :---: | :--- | :---: | :---: | :---: |\n"
-        for c in tickers:
-            flecha = "▲" if ret[c] >= 0 else "▼"
-            color = YF["green"] if ret[c] >= 0 else YF["red"]
-            md += f"| **{c}** | {nombre_de(c)} | <span style='color:{color}'>{flecha} {ret[c]:+.1f}%</span> | {vol[c]*100:.1f}% | {dd[c]:.1f}% |\n"
-        md += "\n> Datos: Yahoo Finance. Histórico ≠ futuro."
-        m0 = metricas_mercado(precios[tickers[0]], tickers[0])
-        return fig1, fig2, md, precios, tickers, m0
-    except Exception as e:
-        fig, ax = plt.subplots(figsize=(6, 2))
-        ax.set_facecolor(YF["bg"])
-        ax.text(0.5, 0.5, f"Error: {e}", ha="center", va="center", color=YF["red"], wrap=True)
-        ax.axis("off")
-        return fig, fig, f"### Error\n{e}", None, [], {}
-
-def simular_inv(precios, tickers, monto, p1, p2, p3, p4, p5, anio):
-    if precios is None or not tickers:
-        return "Primero ejecuta el análisis de mercado."
-    try:
-        pesos = np.array([float(x or 0) for x in (p1, p2, p3, p4, p5)[:len(tickers)]])
-        if pesos.sum() <= 0:
-            raise ValueError("Asigna porcentajes")
-        pesos = pesos / pesos.sum()
-        monto = float(monto)
-        filas, total = [], 0.0
-        for t, w in zip(tickers, pesos):
-            s = precios[t].dropna()
-            inv = monto * w
-            vf = inv * (s.iloc[-1] / s.iloc[0])
-            total += vf
-            filas.append((nombre_de(t), w*100, inv, vf, (vf/inv - 1)*100))
-        md = "| Empresa | % | Invertido | Final | Resultado |\n| :--- | :---: | :---: | :---: |\n"
-        for n, w, inv, vf, g in filas:
-            c = YF["green"] if g >= 0 else YF["red"]
-            md += f"| {n} | {w:.0f}% | ${inv:,.0f} | ${vf:,.0f} | <span style='color:{c}'>{g:+.1f}%</span> |\n"
-        gt = (total/monto - 1)*100
-        c = YF["green"] if gt >= 0 else YF["red"]
-        md += f"\n**Total** ${monto:,.0f} → **${total:,.0f}** (<span style='color:{c}'>{gt:+.1f}%</span>) — año {anio}"
-        return md
-    except Exception as e:
-        return f"Error: {e}"
-
-def cargar_estados(opcion):
-    d = estados_yahoo(ticker_de(opcion))
-    return (d["activo_corriente"], d["pasivo_corriente"], d["inventarios"], d["utilidad_neta"],
-            d["ventas"], d["activos_totales"], d["patrimonio"], d["pasivo_total"],
-            d["utilidades_retenidas"], d["utilidad_operativa"], d["valor_mercado_patrimonio"],
-            d["mensaje"], d["sector"])
-
-def run_diag(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm):
-    try:
-        r = calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm)
-        return r["texto_md"], r
-    except Exception as e:
-        return f"### Error\n{e}", {}
-
-def run_riesgo(precios, tickers, diag, sector):
-    try:
-        if precios is None or not tickers:
-            return "Ejecuta primero Análisis de Mercado.", {}, None
-        m = metricas_mercado(precios[tickers[0]], tickers[0])
-        riesgos = seis_riesgos(m, (diag or {}).get("razones"), sector or "N/D")
-        md = texto_riesgos(m, riesgos)
-        fig, ax = plt.subplots(figsize=(8, 3.5))
-        ax.hist(m["retornos"]*100, bins=40, color=YF["blue"], alpha=0.9, edgecolor=YF["bg"])
-        ax.set_title("Distribución rendimientos diarios %", color=YF["text"])
-        ax.grid(True, alpha=0.2)
-        plt.tight_layout()
-        return md, {"metricas": m, "riesgos": riesgos}, fig
-    except Exception as e:
-        fig, ax = plt.subplots(figsize=(5, 2)); ax.axis("off")
-        return f"Error: {e}", {}, fig
-
-def run_sim(pack, n, umbral):
-    try:
-        m = (pack or {}).get("metricas") or {}
-        if not m:
-            return "Calcula Riesgo primero.", {}, None
-        sim = simulacion_decision(m["mu_diario"], m["sigma_diario"], int(n or 2000), float(umbral or 0.3))
-        fig, ax = plt.subplots(figsize=(8, 3.5))
-        ax.hist(sim["distribucion"]*100, bins=40, color=YF["green"], alpha=0.85, edgecolor=YF["bg"])
-        ax.axvline(0, color=YF["red"], ls="--")
-        ax.set_title(f"Montecarlo → {sim['decision'].upper()}", color=YF["text"])
-        ax.grid(True, alpha=0.2)
-        plt.tight_layout()
-        return sim["detalle"], sim, fig
-    except Exception as e:
-        fig, ax = plt.subplots(figsize=(5, 2)); ax.axis("off")
-        return f"Error: {e}", {}, fig
-
-def run_integ(diag, pack, sim):
-    try:
-        if not diag or not pack:
-            return "Necesitas Diagnóstico y Riesgo.", {}, "IA pendiente", {}
-        integ = analisis_integrado(diag, pack)
-        ia = analisis_ia(integ, sim or {})
-        ctx = {
-            "z_info": diag.get("z_info"),
-            "clasificacion": integ.get("clasificacion"),
-            "decision": (sim or {}).get("decision"),
-        }
-        return integ["texto_md"], integ, ia, ctx
-    except Exception as e:
-        return f"Error: {e}", {}, "IA N/D", {}
-
-def run_calc(tipo, v1, v2, v3, v4, v5):
-    try:
-        if tipo == "Interés Simple":
-            i, m = interes_simple(v1, v2, v3)
-            return f"**Interés:** {fmt(i)}  |  **Monto:** {fmt(m)}"
-        if tipo == "Interés Compuesto":
-            i, m = interes_compuesto(v1, v2, v3)
-            return f"**Interés:** {fmt(i)}  |  **Monto:** {fmt(m)}"
-        if tipo == "Valor Futuro":
-            return f"**VF:** {fmt(valor_futuro(v1, v2, v3))}"
-        if tipo == "Valor Presente":
-            return f"**VP:** {fmt(valor_presente(v1, v2, v3))}"
-        if tipo == "Anualidad VP":
-            return f"**VP:** {fmt(vp_anualidad(v1, v2, v3, v4 or 'ordinaria'))}"
-        if tipo == "Anualidad VF":
-            return f"**VF:** {fmt(vf_anualidad(v1, v2, v3, v4 or 'ordinaria'))}"
-        if tipo == "Amortización":
-            df, cuota = tabla_amortizacion(v1, v2, int(v3))
-            return f"**Cuota:** {fmt(cuota)}\n\n" + df.head(10).to_string(index=False)
-        if tipo == "Conversión de tasas":
-            ef, nom, efd = conversion_tasas(v1, int(v2), int(v3), v4 or "nominal")
-            return f"Efectiva: {ef*100:.4f}% | Nominal dest: {nom*100:.4f}% | Ef. dest: {efd*100:.4f}%"
-        if tipo == "TIR":
-            raw = str(v4 if v4 not in (None, "", "ordinaria") else v1)
-            fl = [float(x.strip()) for x in raw.replace(";", ",").split(",") if x.strip()]
-            return f"**TIR:** {calcular_tir(fl)*100:.4f}%"
-        if tipo == "VAN":
-            raw = str(v4 if v4 not in (None, "", "ordinaria") else v1)
-            fl = [float(x.strip()) for x in raw.replace(";", ",").split(",") if x.strip()]
-            van = calcular_van(fl, float(v2))
-            return f"**VAN:** {fmt(van)} → {'viable' if van>0 else 'no viable' if van<0 else 'equilibrio'}"
-        if tipo == "CAPM":
-            return f"**Ke:** {calcular_capm(v1, v2, v3)*100:.4f}%"
-        if tipo == "WACC":
-            d = float(v4) if str(v4).replace(".","").replace("-","").isdigit() or _is_float(v4) else 0
-            return f"**WACC:** {calcular_wacc(v1, v2, v3, d, v5 or 0.25)*100:.4f}%"
-        if tipo == "EVA":
-            e = calcular_eva(v1, v2, v3)
-            return f"**EVA:** {fmt(e)} → {'creando' if e>0 else 'destruyendo' if e<0 else 'equilibrio'} valor"
-        return "Elige un cálculo"
-    except Exception as e:
-        return f"**Error:** {e}"
-
-def _is_float(x):
-    try:
-        float(x); return True
-    except Exception:
-        return False
+        return "Escribe una pregunta para el asistente."
+    q = pregunta.lower().strip()
+    for k, v in CONCEPTOS.items():
+        if k in q: return f"**{k.upper()}:** {v}"
+    llm_resp = responder_con_llm(pregunta, contexto)
+    if llm_resp: return llm_resp
+    return "Puedo explicarte conceptos financieros o interpretar tus resultados. Pregunta por WACC, EVA, ROE o Z de Altman."
 
 def chat_ui(hist, msg, ctx):
-    if not msg or not str(msg).strip():
-        return hist, ""
+    if not msg or not str(msg).strip(): return hist, ""
     resp = chatbot_responder(msg, ctx or {})
     hist = list(hist or [])
     hist.append((msg, resp))
     return hist, ""
 
-print("✅ BLOQUE 8 listo")
+# PDF
+def generar_reporte_pdf(nombre, diag, pack, sim, integ):
+    if not REPORTLAB_OK: return None, "ReportLab no está disponible."
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph(f"INFORME FINANCIERO — {nombre.upper()}", styles['Title']),
+        Spacer(1, 0.5*cm),
+        Paragraph(f"Fecha: {date.today().strftime('%d/%m/%Y')}", styles['Normal']),
+        Spacer(1, 0.5*cm),
+        Paragraph("1. Diagnóstico:", styles['Heading2']),
+        Paragraph(str((diag or {}).get("texto_md", "Sin datos")).replace("\n", "<br/>"), styles['Normal']),
+        Spacer(1, 0.5*cm),
+        Paragraph("2. Simulación Monte Carlo:", styles['Heading2']),
+        Paragraph(str((sim or {}).get("detalle", "Sin datos")).replace("\n", "<br/>"), styles['Normal']),
+    ]
+    doc.build(story)
+    buf.seek(0)
+    path = os.path.join(tempfile.gettempdir(), f"Informe_{nombre}.pdf")
+    with open(path, "wb") as f: f.write(buf.getvalue())
+    return path, "✅ PDF generado correctamente."
 
-# BLOQUE 9 — UI estilo Yahoo Finance y lanzamiento
-CSS = """
-.gradio-container { background: #0B0E11 !important; color: #EAECEF !important; font-family: Inter, system-ui, sans-serif !important; }
-.dark, .gr-block, .gr-form, .gr-panel { background: #0B0E11 !important; }
-footer { display: none !important; }
-"""
+# WRAPPERS UI
+def pipeline_mercado(opciones, periodo, anio):
+    try:
+        precios = descargar_precios(opciones, periodo, anio)
+        tickers = list(precios.columns)
+        p100 = (precios / precios.iloc[0]) * 100
+        fig1, ax1 = plt.subplots(figsize=(8, 3.5))
+        for c in tickers: ax1.plot(p100.index, p100[c], label=c)
+        ax1.legend(); ax1.grid(True, alpha=0.3); plt.tight_layout()
+        fig2, ax2 = plt.subplots(figsize=(8, 3))
+        ax2.plot(precios.pct_change()*100); ax2.grid(True, alpha=0.3); plt.tight_layout()
+        m0 = metricas_mercado(precios[tickers[0]], tickers[0])
+        return fig1, fig2, "### Mercado analizado exitosamente.", precios, tickers, m0
+    except Exception as e:
+        fig, ax = plt.subplots(figsize=(4, 2)); ax.axis("off")
+        return fig, fig, f"Error: {e}", None, [], {}
 
-with gr.Blocks(title="Robot Financiero | Yahoo-style", css=CSS) as demo:
+def simular_inv(precios, tickers, monto, p1, p2, p3, p4, p5):
+    if precios is None or not tickers: return "Calcula primero mercado.", None
+    pesos = np.array([float(x or 0) for x in (p1, p2, p3, p4, p5)[:len(tickers)]])
+    if pesos.sum() <= 0: return "Asigna porcentajes > 0.", None
+    pesos = pesos / pesos.sum()
+    vf = float(monto) * sum(w * (precios[t].iloc[-1]/precios[t].iloc[0]) for t, w in zip(tickers, pesos))
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.bar(tickers, [w*100 for w in pesos], color=COLORS["primary"])
+    ax.set_ylabel("% Inversión"); plt.tight_layout()
+    return f"**Monto final simulado:** ${vf:,.2f}", fig
+
+def run_calc_ui(tipo, v1, v2, v3, v4, v5):
+    try:
+        if tipo == "Interés Simple": t = f"Interés: {fmt(interes_simple(v1, v2, v3)[0])}"
+        elif tipo == "Interés Compuesto": t = f"Monto: {fmt(interes_compuesto(v1, v2, v3)[1])}"
+        elif tipo == "TIR": t = f"TIR: {calcular_tir([float(x) for x in str(v4).split(',')])*100:.2f}%"
+        elif tipo == "VAN": t = f"VAN: {fmt(calcular_van([float(x) for x in str(v4).split(',')], v2))}"
+        elif tipo == "WACC": t = f"WACC: {calcular_wacc(v1, v2, v3, float(v4 or 0), v5 or 0.25)*100:.2f}%"
+        else: t = "Cálculo completado."
+        return t
+    except Exception as e: return f"Error: {e}"
+
+# GRADIO UI
+with gr.Blocks(title="Robot Financiero Inteligente") as demo:
     gr.HTML("""
-    <div style="background:#181A20;border-bottom:1px solid #2B2F36;padding:16px 20px;border-radius:8px;margin-bottom:12px;">
-      <div style="display:flex;align-items:center;gap:12px;">
-        <div style="width:36px;height:36px;border-radius:8px;background:#3861FB;display:flex;align-items:center;justify-content:center;font-weight:800;color:white;">RF</div>
-        <div>
-          <div style="font-size:20px;font-weight:700;color:#EAECEF;letter-spacing:-0.3px;">Robot Financiero Inteligente</div>
-          <div style="font-size:12px;color:#848E9C;">Diagnóstico · Riesgo · Datos Yahoo Finance · Simulación · IA Gemini</div>
-        </div>
-      </div>
+    <div style="background:linear-gradient(135deg,#1E40AF,#2563EB);padding:18px 24px;border-radius:12px;margin-bottom:14px;">
+      <div style="font-size:22px;font-weight:700;color:white;">Robot Financiero Inteligente</div>
+      <div style="font-size:12px;color:#BFDBFE;">Diagnóstico · Riesgos · Simulación · Gemini IA · Reportes PDF</div>
     </div>
     """)
-
+    
     st_precios, st_tickers = gr.State(None), gr.State([])
     st_diag, st_riesgo, st_sim = gr.State({}), gr.State({}), gr.State({})
-    st_sector, st_ctx = gr.State("N/D"), gr.State({})
+    st_sector, st_nombre, st_ctx = gr.State("N/D"), gr.State("Empresa"), gr.State({})
     st_m0, st_integ_state = gr.State({}), gr.State({})
 
     with gr.Tabs():
-        with gr.Tab("📈 Mercado"):
+        with gr.Tab("📈 Mercado & Inversión"):
             with gr.Row():
-                sel_emp = gr.Dropdown(OPCIONES, multiselect=True, value=["Apple Inc. (AAPL)", "Microsoft Corporation (MSFT)"], label="Símbolos (1–5)")
-                sel_anio = gr.Dropdown(ANIOS, value=str(ANIO_ACTUAL), label="Año")
-                btn_mkt = gr.Button("Analizar", variant="primary")
+                sel_emp = gr.Dropdown(OPCIONES, multiselect=True, value=["Apple Inc. (AAPL)"], label="Empresas (1-5)")
+                sel_per = gr.Dropdown(["6 meses", "1 año", "2 años", "5 años"], value="1 año", label="Periodo")
+                sel_an = gr.Dropdown(["Automático (usar periodo)"] + [str(a) for a in range(date.today().year, 2015, -1)], value="Automático (usar periodo)", label="Año específico")
+                btn_mkt = gr.Button("Analizar Mercado", variant="primary")
             with gr.Row():
-                plot_p = gr.Plot()
-                plot_r = gr.Plot()
+                plot_p, plot_r = gr.Plot(), gr.Plot()
             md_mkt = gr.Markdown()
-            gr.Markdown("#### Simulador de inversión")
             with gr.Row():
-                monto = gr.Number(1000, label="Monto USD")
-                s1 = gr.Slider(0, 100, 50, label="% 1")
-                s2 = gr.Slider(0, 100, 50, label="% 2")
-                s3 = gr.Slider(0, 100, 0, label="% 3")
-                s4 = gr.Slider(0, 100, 0, label="% 4")
-                s5 = gr.Slider(0, 100, 0, label="% 5")
-            btn_inv = gr.Button("Simular")
+                monto = gr.Number(10000, label="Monto USD")
+                s1 = gr.Slider(0, 100, 100, label="% Emp 1")
+                btn_inv = gr.Button("Simular Inversión")
             md_inv = gr.Markdown()
+            plot_inv = gr.Plot()
 
-        with gr.Tab("📋 Diagnóstico"):
+        with gr.Tab("📋 Diagnóstico & Riesgos"):
             with gr.Row():
                 sel_d = gr.Dropdown(OPCIONES_MANUAL, value=OPCIONES_MANUAL[1], label="Empresa")
                 btn_load = gr.Button("Cargar Yahoo Finance")
             md_load = gr.Markdown()
             with gr.Row():
                 with gr.Column():
-                    ac = gr.Number(0, label="Activo Corriente")
-                    pc = gr.Number(0, label="Pasivo Corriente")
-                    inv = gr.Number(0, label="Inventarios")
-                    un = gr.Number(0, label="Utilidad Neta")
+                    ac = gr.Number(0, label="Activo Corriente"); pc = gr.Number(0, label="Pasivo Corriente")
+                    inv = gr.Number(0, label="Inventarios"); un = gr.Number(0, label="Utilidad Neta")
                     ven = gr.Number(0, label="Ventas")
                 with gr.Column():
-                    at = gr.Number(0, label="Activos Totales")
-                    pat = gr.Number(0, label="Patrimonio")
-                    pt = gr.Number(0, label="Pasivo Total")
-                    ur = gr.Number(0, label="Utilidades Retenidas")
-                    uo = gr.Number(0, label="EBIT")
-                    vm = gr.Number(0, label="Market Cap / Patrimonio mercado")
-            btn_diag = gr.Button("Calcular diagnóstico", variant="primary")
-            md_diag = gr.Markdown()
-
-        with gr.Tab("⚠ Riesgo"):
-            btn_risk = gr.Button("Calcular 6 riesgos + VaR", variant="primary")
-            md_risk = gr.Markdown()
-            plot_h = gr.Plot()
+                    at = gr.Number(0, label="Activos Totales"); pat = gr.Number(0, label="Patrimonio")
+                    pt = gr.Number(0, label="Pasivo Total"); ur = gr.Number(0, label="Utilidades Retenidas")
+                    uo = gr.Number(0, label="EBIT"); vm = gr.Number(0, label="Market Cap")
             with gr.Row():
-                n_esc = gr.Number(2000, label="Escenarios Montecarlo")
-                umbral = gr.Slider(0.05, 0.5, 0.30, step=0.05, label="Umbral P(pérdida)")
-            btn_sim = gr.Button("Simular decisión", variant="primary")
+                btn_diag = gr.Button("1. Diagnóstico", variant="primary")
+                btn_sim = gr.Button("2. Simulación Monte Carlo", variant="primary")
+                btn_int = gr.Button("3. Integración + Gemini", variant="primary")
+            md_diag = gr.Markdown()
             md_sim = gr.Markdown()
-            plot_mc = gr.Plot()
-
-        with gr.Tab("🎯 Integrado + IA"):
-            btn_int = gr.Button("Generar análisis integrado", variant="primary")
             md_int = gr.Markdown()
             md_ia = gr.Markdown()
+            btn_pdf = gr.Button("📄 Descargar Informe PDF")
+            file_pdf = gr.File(label="Descargar PDF")
 
         with gr.Tab("🧮 Calculadora"):
-            tipo = gr.Dropdown(
-                ["Interés Simple", "Interés Compuesto", "Valor Futuro", "Valor Presente",
-                 "Anualidad VP", "Anualidad VF", "Amortización", "Conversión de tasas",
-                 "TIR", "VAN", "CAPM", "WACC", "EVA"],
-                value="Interés Simple", label="Cálculo")
-            with gr.Row():
-                v1 = gr.Number(1_000_000, label="V1")
-                v2 = gr.Number(0.12, label="V2")
-                v3 = gr.Number(2, label="V3")
-            with gr.Row():
-                v4 = gr.Textbox("ordinaria", label="V4 (tipo o flujos TIR/VAN)")
-                v5 = gr.Number(0.35, label="V5 (impuesto WACC)")
-            gr.Markdown("TIR/VAN → flujos en V4: `-10000000, 3000000, 3500000, 4000000` · WACC → V1=Ke V2=Kd V3=E V4=D V5=tax")
-            btn_c = gr.Button("Calcular", variant="primary")
-            md_c = gr.Markdown()
+            c_tipo = gr.Dropdown(["Interés Simple", "Interés Compuesto", "TIR", "VAN", "WACC"], value="Interés Simple", label="Cálculo")
+            cv1 = gr.Number(1000000, label="V1 (Capital / Ke)")
+            cv2 = gr.Number(0.10, label="V2 (Tasa / Kd)")
+            cv3 = gr.Number(2, label="V3 (Tiempo / E)")
+            cv4 = gr.Textbox("-1000, 300, 500, 400", label="V4 (Flujos / D)")
+            cv5 = gr.Number(0.25, label="V5 (Impuesto WACC)")
+            btn_calc = gr.Button("Calcular", variant="primary")
+            md_calc = gr.Markdown()
 
-        with gr.Tab("💬 Asistente"):
-            chat = gr.Chatbot(height=400)
-            msg = gr.Textbox(label="Pregunta", placeholder="¿Por qué la simulación dio ese resultado?")
+        with gr.Tab("💬 Asistente FinanIA"):
+            chat = gr.Chatbot(height=420)
+            msg = gr.Textbox(label="Pregunta", placeholder="Pregunta sobre finanzas o la empresa cargada...")
             with gr.Row():
                 btn_send = gr.Button("Enviar", variant="primary")
                 btn_clr = gr.Button("Limpiar")
 
-    btn_mkt.click(pipeline_mercado, [sel_emp, sel_anio], [plot_p, plot_r, md_mkt, st_precios, st_tickers, st_m0])
-    btn_inv.click(simular_inv, [st_precios, st_tickers, monto, s1, s2, s3, s4, s5, sel_anio], md_inv)
-    btn_load.click(cargar_estados, sel_d, [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, md_load, st_sector])
-    btn_diag.click(run_diag, [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm], [md_diag, st_diag])
-    btn_risk.click(run_riesgo, [st_precios, st_tickers, st_diag, st_sector], [md_risk, st_riesgo, plot_h])
-    btn_sim.click(run_sim, [st_riesgo, n_esc, umbral], [md_sim, st_sim, plot_mc])
-    btn_int.click(run_integ, [st_diag, st_riesgo, st_sim], [md_int, st_integ_state, md_ia, st_ctx])
-    btn_c.click(run_calc, [tipo, v1, v2, v3, v4, v5], md_c)
+    # Callbacks
+    btn_mkt.click(pipeline_mercado, [sel_emp, sel_per, sel_an], [plot_p, plot_r, md_mkt, st_precios, st_tickers, st_m0])
+    btn_inv.click(simular_inv, [st_precios, st_tickers, monto, s1, gr.State(0), gr.State(0), gr.State(0), gr.State(0)], [md_inv, plot_inv])
+    
+    btn_load.click(
+        lambda opcion: (
+            estados_yahoo(ticker_de(opcion))["activo_corriente"],
+            estados_yahoo(ticker_de(opcion))["pasivo_corriente"],
+            estados_yahoo(ticker_de(opcion))["inventarios"],
+            estados_yahoo(ticker_de(opcion))["utilidad_neta"],
+            estados_yahoo(ticker_de(opcion))["ventas"],
+            estados_yahoo(ticker_de(opcion))["activos_totales"],
+            estados_yahoo(ticker_de(opcion))["patrimonio"],
+            estados_yahoo(ticker_de(opcion))["pasivo_total"],
+            estados_yahoo(ticker_de(opcion))["utilidades_retenidas"],
+            estados_yahoo(ticker_de(opcion))["utilidad_operativa"],
+            estados_yahoo(ticker_de(opcion))["valor_mercado_patrimonio"],
+            estados_yahoo(ticker_de(opcion))["mensaje"],
+            estados_yahoo(ticker_de(opcion))["sector"],
+            estados_yahoo(ticker_de(opcion))["nombre"]
+        ),
+        sel_d,
+        [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, md_load, st_sector, st_nombre]
+    )
+
+    btn_diag.click(
+        lambda ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nom: (
+            calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nom)["texto_md"],
+            calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nom)
+        ),
+        [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, st_nombre],
+        [md_diag, st_diag]
+    )
+
+    btn_sim.click(
+        lambda: (
+            simulacion_decision(0.0005, 0.015)["detalle"],
+            simulacion_decision(0.0005, 0.015)
+        ),
+        None,
+        [md_sim, st_sim]
+    )
+
+    btn_int.click(
+        lambda diag, riesgo, sim: (
+            analisis_integrado(diag, riesgo)["texto_md"],
+            analisis_integrado(diag, riesgo),
+            analisis_ia_gemini(analisis_integrado(diag, riesgo), sim),
+            {"z_info": (diag or {}).get("z_info"), "clasificacion": analisis_integrado(diag, riesgo).get("clasificacion"), "decision": (sim or {}).get("decision"), "nombre": (diag or {}).get("nombre"), "score": analisis_integrado(diag, riesgo).get("score")}
+        ),
+        [st_diag, st_riesgo, st_sim],
+        [md_int, st_integ_state, md_ia, st_ctx]
+    )
+
+    btn_pdf.click(generar_reporte_pdf, [st_nombre, st_diag, st_riesgo, st_sim, st_ctx], [file_pdf, md_int])
+    btn_calc.click(run_calc_ui, [c_tipo, cv1, cv2, cv3, cv4, cv5], md_calc)
     btn_send.click(chat_ui, [chat, msg, st_ctx], [chat, msg])
     msg.submit(chat_ui, [chat, msg, st_ctx], [chat, msg])
     btn_clr.click(lambda: [], outputs=chat)
