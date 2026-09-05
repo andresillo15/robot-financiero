@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """app.py
 
-Robot Financiero Inteligente — Versión definitiva con:
-- Integración conversacional profunda con Google Gemini (memoria multi-turno, razonamiento analítico y tono pedagógico)
-- Diagnóstico financiero completo (Z de Altman, KTN, DuPont, razones de liquidez/solvencia)
-- Análisis de riesgo de mercado, 6 riesgos empresariales y simulación Monte Carlo
+Robot Financiero Inteligente — Versión final completa con:
+- Integración dual y diagnóstica de Google Gemini (google-genai / google-generativeai)
+- Diagnóstico financiero integral (Altman Z-Score, DuPont, liquidez y solvencia)
+- Análisis de mercado, 6 riesgos empresariales y simulación Monte Carlo
 - Calculadora financiera interactiva (interés, amortización, TIR, VAN, WACC, EVA)
-- Generación de reportes ejecutivos en PDF (ReportLab)
-- Compatibilidad nativa de Gradio (formato de mensajes por diccionario) y puerto dinámico para Render
+- Generación de reportes ejecutivos en PDF con ReportLab
+- Configuración de host y puerto dinámico para despliegue en Render
 """
 
 import os
@@ -23,13 +23,6 @@ import matplotlib.pyplot as plt
 import gradio as gr
 import yfinance as yf
 import numpy_financial as npf
-
-# Intentar importar Google GenAI
-try:
-    from google import genai
-    GENAI_AVAILABLE = True
-except ImportError:
-    GENAI_AVAILABLE = False
 
 # Intentar importar ReportLab para PDFs
 try:
@@ -73,7 +66,7 @@ plt.rcParams.update({
 })
 
 # ============================================================
-# ASISTENTE CONVERSACIONAL AVANZADO (ESTILO GEMINI)
+# ASISTENTE CONVERSACIONAL Y MOTOR GEMINI ROBUSTO
 # ============================================================
 
 SYSTEM_PROMPT_FINANIA = """
@@ -87,7 +80,7 @@ Reglas clave para tus respuestas:
    - Detalla CÓMO interpretarlo (qué significa si es alto/bajo/positivo/negativo).
    - Explica el IMPACTO en la toma de decisiones financieras o de inversión.
 3. Si en el contexto hay una empresa cargada o cálculos previos, fundamenta SIEMPRE tu análisis con esos números reales.
-4. Mantén coherencia y memoria a lo largo del hilo conversacional.
+4. Mantén coherencia y formato Markdown legible.
 """
 
 def _contexto_a_texto(contexto):
@@ -115,68 +108,53 @@ def _contexto_a_texto(contexto):
 
 def responder_con_llm(historial_chat, pregunta_actual, contexto=None):
     api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key or not GENAI_AVAILABLE:
-        return None
+    if not api_key:
+        return "⚠️ Error: No se detectó la variable `GEMINI_API_KEY` en Render. Revisa la pestaña Environment de tu dashboard."
+
+    info_ctx = _contexto_a_texto(contexto)
+    prompt_completo = f"""
+{SYSTEM_PROMPT_FINANIA}
+
+[CONTEXTO FINANCIERO ACTUAL DE LA SESIÓN]
+{info_ctx}
+
+[PREGUNTA DEL USUARIO]
+{pregunta_actual}
+"""
+
+    error_sdk1 = None
+    error_sdk2 = None
+
+    # Intento 1: SDK google-genai
     try:
-        info_ctx = _contexto_a_texto(contexto)
-        
-        # Primer mensaje con el system prompt y el contexto dinámico
-        mensajes_para_gemini = [
-            {"role": "user", "parts": [f"{SYSTEM_PROMPT_FINANIA}\n\n[CONTEXTO ACTUAL DE LA APLICACIÓN]\n{info_ctx}"]},
-            {"role": "model", "parts": ["Entendido. Tengo en cuenta las instrucciones, el rol de analista sénior y los datos de la sesión actual."]}
-        ]
-        
-        # Agregar historial previo manteniendo la secuencia
-        for turno in (historial_chat or []):
-            if isinstance(turno, dict):
-                r = "user" if turno.get("role") == "user" else "model"
-                c = turno.get("content", "")
-                if c:
-                    mensajes_para_gemini.append({"role": r, "parts": [str(c)]})
-            elif isinstance(turno, (list, tuple)) and len(turno) == 2:
-                if turno[0]:
-                    mensajes_para_gemini.append({"role": "user", "parts": [str(turno[0])]})
-                if turno[1]:
-                    mensajes_para_gemini.append({"role": "model", "parts": [str(turno[1])]})
-
-        # Pregunta del turno actual
-        mensajes_para_gemini.append({"role": "user", "parts": [str(pregunta_actual)]})
-
+        from google import genai
         client = genai.Client(api_key=api_key)
         res = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=mensajes_para_gemini,
+            contents=prompt_completo,
         )
-        return res.text
-    except Exception as e:
-        print("Error al llamar a Gemini:", e)
-        return None
+        if hasattr(res, "text") and res.text:
+            return res.text
+    except Exception as e1:
+        error_sdk1 = str(e1)
 
-CONCEPTOS_RESPALDO = {
-    "wacc": "WACC es el costo promedio ponderado de capital. Representa el rendimiento mínimo que debe generar una compañía sobre su base de activos existente para satisfacer a los acreedores y accionistas.",
-    "eva": "EVA (Valor Económico Agregado). Mide el verdadero beneficio económico restante una vez deducido el costo total del capital invertido. EVA > 0 crea riqueza.",
-    "roe": "ROE = Utilidad Neta / Patrimonio. Mide la rentabilidad del capital propio aportado por los socios o accionistas.",
-    "roa": "ROA = Utilidad Neta / Activos Totales. Mide la eficiencia operativa con la que la gerencia utiliza los recursos totales.",
-    "z altman": "Z de Altman es un modelo multivariado que predice el riesgo de insolvencia a 2 años. Z > 2.99 Zona Segura | 1.81 - 2.99 Zona Gris | < 1.81 Zona de Quiebra.",
-    "van": "VAN descuenta los flujos de caja futuros a una tasa de oportunidad. Si VAN > 0 el proyecto genera valor neto por encima de la tasa exigida.",
-    "tir": "TIR es la tasa de descuento intrínseca que hace el VAN igual a cero. Si la TIR supera el WACC o costo de capital, el proyecto es viable.",
-}
+    # Intento 2: SDK google-generativeai
+    try:
+        import google.generativeai as gai
+        gai.configure(api_key=api_key)
+        model = gai.GenerativeModel("gemini-2.5-flash")
+        res = model.generate_content(prompt_completo)
+        if hasattr(res, "text") and res.text:
+            return res.text
+    except Exception as e2:
+        error_sdk2 = str(e2)
+
+    return f"⚠️ Error al conectar con Gemini:\n- Error SDK 1: {error_sdk1}\n- Error SDK 2: {error_sdk2}\n\nVerifica que la clave en Render sea válida."
 
 def chatbot_responder(historial, pregunta, contexto=None):
     if not pregunta or not str(pregunta).strip():
-        return "¡Hola! Soy FinanIA. Puedes consultarme conceptos financieros, pedirme análisis estratégicos o interpretar la empresa cargada."
-    
-    # 1. Intentar responder con Gemini
-    llm_resp = responder_con_llm(historial, pregunta, contexto)
-    if llm_resp:
-        return llm_resp
-
-    # 2. Respaldo si no hay conexión
-    q = pregunta.lower().strip()
-    for k, v in CONCEPTOS_RESPALDO.items():
-        if k in q:
-            return f"*(Modo sin API Key)* **{k.upper()}:** {v}"
-    return "No se pudo contactar con Gemini. Revisa que `GEMINI_API_KEY` esté configurada en las Variables de Entorno de Render."
+        return "¡Hola! Soy FinanIA. Puedes hacerme cualquier consulta sobre análisis financiero o la empresa cargada."
+    return responder_con_llm(historial, pregunta, contexto)
 
 def chat_ui(hist, msg, ctx):
     if not msg or not str(msg).strip():
@@ -464,15 +442,32 @@ def analisis_ia_gemini(integ, sim):
     2. **Perfil Riesgo-Retorno:** Interpreta los resultados de la simulación y probabilidad de pérdida.
     3. **Recomendaciones Estratégicas:** Acciones concretas para mitigación de riesgos o decisiones de inversión.
     """
+    
+    # Intento 1: SDK google-genai
     try:
+        from google import genai
         client = genai.Client(api_key=api_key)
         res = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
         )
-        return "### 🤖 Diagnóstico Financiero con Gemini\n\n" + res.text
+        if hasattr(res, "text") and res.text:
+            return "### 🤖 Diagnóstico Financiero con Gemini\n\n" + res.text
+    except Exception:
+        pass
+
+    # Intento 2: SDK google-generativeai
+    try:
+        import google.generativeai as gai
+        gai.configure(api_key=api_key)
+        model = gai.GenerativeModel("gemini-2.5-flash")
+        res = model.generate_content(prompt)
+        if hasattr(res, "text") and res.text:
+            return "### 🤖 Diagnóstico Financiero con Gemini\n\n" + res.text
     except Exception as e:
         return f"Error al generar informe con Gemini: {e}"
+
+    return "No se pudo generar el diagnóstico con Gemini. Revisa la clave configurada."
 
 # PDF
 def generar_reporte_pdf(nombre, diag, pack, sim, integ):
