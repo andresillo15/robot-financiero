@@ -4,4 +4,5 @@ pandas
 numpy
 matplotlib
 numpy-financial
+reportlab
 google-genai
