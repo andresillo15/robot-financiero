@@ -48,6 +48,14 @@ try:
 except ImportError:
     REPORTLAB_OK = False
 
+# Intentar importar librerías para el simulador de Política Financiera
+try:
+    import networkx as nx
+    import plotly.graph_objects as go
+    POLITICA_OK = True
+except ImportError:
+    POLITICA_OK = False
+
 warnings.filterwarnings("ignore")
 
 COLORS = {
@@ -1680,6 +1688,236 @@ def _calc_tab(tipo, a, b, c, d, e, ctx):
         return f"⚠️ Error: {ex}", fig, ctx
 
 # ============================================================
+# POLÍTICA FINANCIERA (SIMULADOR DE ESCENARIOS + GRAFO DE IMPACTO)
+# Adaptado del modelo del profesor: reutiliza CATALOGO/OPCIONES,
+# ticker_de/nombre_de y _buscar ya existentes en la app.
+# ============================================================
+
+_CACHE_POLITICA = {}
+
+def cargar_datos_politica(ticker):
+    try:
+        empresa = yf.Ticker(ticker)
+        income = empresa.income_stmt
+        balance = empresa.balance_sheet
+        cashflow = empresa.cashflow
+
+        revenue = _buscar(income, ["total revenue", "operating revenue"]) or 0
+        operating_income = _buscar(income, ["operating income"]) or 0
+        net_income = _buscar(income, ["net income", "net income common stockholders"]) or 0
+        assets = _buscar(balance, ["total assets"]) or 0
+        debt = _buscar(balance, ["total debt", "long term debt"]) or 0
+        equity = _buscar(balance, ["stockholders equity", "common stock equity"]) or 0
+        cash = _buscar(balance, ["cash cash equivalents and short term investments", "cash and cash equivalents"]) or 0
+        current_assets = _buscar(balance, ["current assets"]) or 0
+        current_liabilities = _buscar(balance, ["current liabilities"]) or 0
+        operating_cf = _buscar(cashflow, ["operating cash flow", "total cash from operating activities"]) or 0
+
+        if equity == 0:
+            equity = assets - debt
+        if operating_income == 0:
+            operating_income = revenue * 0.15
+        if current_liabilities == 0:
+            current_liabilities = max(debt * 0.30, assets * 0.10)
+        if current_assets == 0:
+            current_assets = max(cash, assets * 0.25)
+
+        margin = operating_income / revenue if revenue else 0
+        roe = net_income / equity if equity else 0
+        debt_ratio = debt / assets if assets else 0
+        liquidity = current_assets / current_liabilities if current_liabilities else 0
+
+        return {
+            "revenue": revenue, "operating_income": operating_income, "net_income": net_income,
+            "assets": assets, "debt": debt, "equity": equity, "cash": cash,
+            "current_assets": current_assets, "current_liabilities": current_liabilities,
+            "operating_cf": operating_cf, "margin": margin, "roe": roe,
+            "debt_ratio": debt_ratio, "liquidity": liquidity,
+        }
+    except Exception as e:
+        print(f"[Política] Error al cargar {ticker}: {e}", file=sys.stderr, flush=True)
+        return None
+
+def simular_politica(base, crecimiento, margen, deuda, cartera, inventario, tasa, dividendos):
+    ventas = base["revenue"] * (1 + crecimiento / 100)
+    ebitda = ventas * (margen / 100)
+    nueva_deuda = base["assets"] * (deuda / 100)
+    intereses = nueva_deuda * (tasa / 100)
+    utilidad = ebitda - intereses
+
+    cartera_factor = cartera / 60
+    inventario_factor = inventario / 60
+    capital_trabajo = base["current_assets"] * 0.55 * cartera_factor * inventario_factor
+
+    flujo_caja = utilidad + base["operating_cf"] * 0.20 - capital_trabajo * 0.05
+
+    patrimonio = base["assets"] - nueva_deuda
+    if patrimonio <= 0:
+        patrimonio = base["equity"]
+
+    dividendos_pago = max(utilidad * dividendos / 100, 0)
+    patrimonio_final = patrimonio + utilidad - dividendos_pago
+
+    roe = utilidad / patrimonio_final if patrimonio_final > 0 else 0
+    margen_final = ebitda / ventas if ventas else 0
+    deuda_final = nueva_deuda / base["assets"] if base["assets"] else 0
+    liquidez = base["current_assets"] / max(base["current_liabilities"], 1)
+
+    return {
+        "ventas": ventas, "ebitda": ebitda, "intereses": intereses, "utilidad": utilidad,
+        "deuda": nueva_deuda, "patrimonio": patrimonio_final, "flujo": flujo_caja,
+        "roe": roe, "margen": margen_final, "deuda_ratio": deuda_final, "liquidez": liquidez,
+    }
+
+_EDGES_POLITICA = [
+    ("Crecimiento", "Ventas"), ("Ventas", "EBITDA"), ("Margen", "EBITDA"),
+    ("Ventas", "Cartera"), ("Cartera", "CapitalTrabajo"),
+    ("Inventario", "CapitalTrabajo"), ("CapitalTrabajo", "FlujoCaja"),
+    ("Deuda", "Intereses"), ("Tasa", "Intereses"),
+    ("EBITDA", "Utilidad"), ("Intereses", "Utilidad"),
+    ("Utilidad", "FlujoCaja"),
+    ("Utilidad", "ROE"), ("Deuda", "ROE"), ("Dividendos", "Patrimonio"), ("Patrimonio", "ROE"),
+]
+
+_POS_POLITICA = {
+    "Crecimiento": (-3, 3), "Ventas": (-1.5, 3),
+    "Margen": (1, 4), "EBITDA": (1.5, 2.5),
+    "Cartera": (-3, 1.5), "Inventario": (-3, 0),
+    "CapitalTrabajo": (-1.5, 0.8), "FlujoCaja": (0, -0.5),
+    "Deuda": (3, 2), "Tasa": (4, 0.5), "Intereses": (2.5, 1),
+    "Utilidad": (2, -0.5), "Dividendos": (3, -2),
+    "Patrimonio": (1, -2), "ROE": (0, -3),
+}
+
+def crear_grafo_politica(base, sim):
+    G = nx.DiGraph()
+    G.add_edges_from(_EDGES_POLITICA)
+    nodes = list(G.nodes)
+
+    impacto = {
+        "Crecimiento": abs(sim["ventas"] / max(base["revenue"], 1) - 1),
+        "Ventas": abs(sim["ventas"] / max(base["revenue"], 1) - 1),
+        "Margen": abs(sim["margen"] - base["margin"]),
+        "EBITDA": abs(sim["ebitda"] / max(base["operating_income"], 1) - 1),
+        "Cartera": 0.35,
+        "Inventario": 0.30,
+        "CapitalTrabajo": 0.35,
+        "FlujoCaja": abs(sim["flujo"] / max(abs(base["operating_cf"]), 1) - 1),
+        "Deuda": abs(sim["deuda"] / max(base["debt"], 1) - 1),
+        "Tasa": 0.25,
+        "Intereses": abs(sim["intereses"] / max(base["debt"] * 0.06, 1) - 1),
+        "Utilidad": abs(sim["utilidad"] / max(abs(base["net_income"]), 1) - 1),
+        "Dividendos": 0.25,
+        "Patrimonio": abs(sim["patrimonio"] / max(base["equity"], 1) - 1),
+        "ROE": abs(sim["roe"] - base["roe"]),
+    }
+    max_impact = max(impacto.values()) or 1
+
+    node_size = [22 + 45 * (impacto[n] / max_impact) for n in nodes]
+    node_color = [impacto[n] / max_impact for n in nodes]
+
+    edge_x, edge_y = [], []
+    for u, v in G.edges():
+        x0, y0 = _POS_POLITICA[u]
+        x1, y1 = _POS_POLITICA[v]
+        edge_x += [x0, x1, None]
+        edge_y += [y0, y1, None]
+
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y, mode="lines",
+        line=dict(width=2, color="rgba(37,99,235,0.45)"),
+        hoverinfo="none",
+    )
+
+    node_x = [_POS_POLITICA[n][0] for n in nodes]
+    node_y = [_POS_POLITICA[n][1] for n in nodes]
+
+    labels = []
+    for n in nodes:
+        if n == "ROE":
+            value = f"{sim['roe']*100:.1f}%"
+        elif n == "Ventas":
+            value = f"${sim['ventas']/1e9:.1f}B"
+        elif n == "EBITDA":
+            value = f"${sim['ebitda']/1e9:.1f}B"
+        elif n == "Utilidad":
+            value = f"${sim['utilidad']/1e9:.1f}B"
+        elif n == "Deuda":
+            value = f"${sim['deuda']/1e9:.1f}B"
+        elif n == "FlujoCaja":
+            value = f"${sim['flujo']/1e9:.1f}B"
+        elif n == "Patrimonio":
+            value = f"${sim['patrimonio']/1e9:.1f}B"
+        elif n == "Margen":
+            value = f"{sim['margen']*100:.1f}%"
+        elif n == "Intereses":
+            value = f"${sim['intereses']/1e9:.1f}B"
+        else:
+            value = ""
+        labels.append(f"<b>{n}</b><br>{value}")
+
+    node_trace = go.Scatter(
+        x=node_x, y=node_y, mode="markers+text",
+        text=labels, textposition="middle center", textfont=dict(size=10, color="#0F172A"),
+        marker=dict(
+            size=node_size, color=node_color,
+            colorscale=[[0, "#60A5FA"], [0.5, "#2563EB"], [1, "#DC2626"]],
+            showscale=False,
+            line=dict(width=1.5, color="#1E40AF"),
+        ),
+        hovertemplate=[f"<b>{n}</b><br>Impacto: {impacto[n]*100:.1f}%<extra></extra>" for n in nodes],
+    )
+
+    fig = go.Figure(data=[edge_trace, node_trace])
+    fig.update_layout(
+        paper_bgcolor="#F8FAFC", plot_bgcolor="#F8FAFC",
+        height=650, margin=dict(l=10, r=10, t=50, b=10),
+        title=dict(text="Grafo de Impacto — Política Financiera", font=dict(color="#1E40AF", size=18)),
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        showlegend=False,
+    )
+    return fig
+
+def ejecutar_politica(empresa_opcion, crecimiento, margen, deuda, cartera, inventario, tasa, dividendos):
+    ticker = ticker_de(empresa_opcion)
+    if not ticker:
+        return None, "⚠️ Selecciona una empresa válida (con ticker de Yahoo Finance)."
+
+    if ticker not in _CACHE_POLITICA:
+        _CACHE_POLITICA[ticker] = cargar_datos_politica(ticker)
+    base = _CACHE_POLITICA[ticker]
+
+    if base is None:
+        return None, "⚠️ No fue posible obtener los estados financieros de esta empresa desde Yahoo Finance."
+
+    sim = simular_politica(base, crecimiento, margen, deuda, cartera, inventario, tasa, dividendos)
+    fig = crear_grafo_politica(base, sim)
+
+    delta_roe = (sim["roe"] - base["roe"]) * 100
+    estado = "🟢 OBJETIVO FAVORABLE" if delta_roe >= 0 else "🔴 OBJETIVO DETERIORADO"
+    nombre_empresa = nombre_de(ticker)
+
+    texto = f"""### {nombre_empresa} — {ticker}
+
+**Estado de la simulación:** {estado}
+
+| Indicador | Actual | Simulado |
+| :--- | ---: | ---: |
+| ROE | {base['roe']*100:.2f}% | **{sim['roe']*100:.2f}%** |
+| Margen operativo | {base['margin']*100:.2f}% | **{sim['margen']*100:.2f}%** |
+| Deuda / Activos | {base['debt_ratio']*100:.2f}% | **{sim['deuda_ratio']*100:.2f}%** |
+| Liquidez | {base['liquidity']:.2f} | **{sim['liquidez']:.2f}** |
+| Flujo de caja simulado | | **${sim['flujo']/1e9:.2f} B** |
+
+**Impacto en ROE: {delta_roe:+.2f} puntos porcentuales**
+
+La red muestra cómo se propaga el cambio de política financiera desde las variables que ajustaste (crecimiento, margen, deuda, cartera, inventario, tasa, dividendos) hasta los resultados de la empresa. El tamaño y el color de cada nodo indican qué tan grande fue el movimiento de esa variable respecto a su valor actual.
+
+ℹ️ Este es un modelo de sensibilidad simplificado con fines educativos, no un modelo econométrico ni asesoría financiera.
+"""
+    return fig, texto
+
+# ============================================================
 # INTERFAZ GRADIO COMPLETA (UI)
 # ============================================================
 
@@ -1927,6 +2165,28 @@ with gr.Blocks(title="Robot Financiero Inteligente") as demo:
                         md_eva = gr.Markdown(scale=2)
                         plot_eva = gr.Plot(scale=3)
 
+        if POLITICA_OK:
+            with gr.Tab("🧠 Política Financiera"):
+                gr.Markdown("### Simulador de política financiera — grafo de impacto")
+                gr.Markdown(
+                    "Ajusta las variables de política (crecimiento, margen, deuda, cartera, inventario, tasa, "
+                    "dividendos) y observa cómo se propaga el efecto sobre ROE, utilidad, flujo de caja y patrimonio."
+                )
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        sel_pol = gr.Dropdown(OPCIONES, value="Apple Inc. (AAPL)", label="Empresa — Yahoo Finance")
+                        pol_crecimiento = gr.Slider(-20, 30, value=0, step=1, label="Crecimiento de ventas (%)")
+                        pol_margen = gr.Slider(1, 50, value=15, step=0.5, label="Margen operativo (%)")
+                        pol_deuda = gr.Slider(5, 90, value=40, step=1, label="Endeudamiento (%)")
+                        pol_cartera = gr.Slider(15, 150, value=60, step=5, label="Días de cartera")
+                        pol_inventario = gr.Slider(15, 150, value=60, step=5, label="Días de inventario")
+                        pol_tasa = gr.Slider(1, 30, value=6, step=0.5, label="Tasa de financiación (%)")
+                        pol_dividendos = gr.Slider(0, 100, value=25, step=5, label="Dividendos (%)")
+                        btn_pol = gr.Button("⚡ Ejecutar simulación", variant="primary")
+                    with gr.Column(scale=2):
+                        plot_pol = gr.Plot(label="Grafo de impacto")
+                        md_pol = gr.Markdown("Selecciona una empresa y ejecuta una simulación.")
+
         with gr.Tab("💬 Asistente Explicativo"):
             gr.Markdown("### Conversa con el asistente: recuerda lo que ya hiciste en otras pestañas")
             with gr.Row():
@@ -1974,6 +2234,12 @@ with gr.Blocks(title="Robot Financiero Inteligente") as demo:
     btn_capm.click(lambda a, b, c, ctx: _calc_tab("CAPM", a, b, c, 0, 0, ctx), [capm_rf, capm_beta, capm_rm, st_ctx], [md_capm, plot_capm, st_ctx])
     btn_wacc.click(lambda a, b, c, d, e, ctx: _calc_tab("WACC", a, b, c, d, e, ctx), [wacc_ke, wacc_kd, wacc_e, wacc_d, wacc_tax, st_ctx], [md_wacc, plot_wacc, st_ctx])
     btn_eva.click(lambda a, b, c, ctx: _calc_tab("EVA", a, b, c, 0, 0, ctx), [eva_nopat, eva_wacc, eva_capital, st_ctx], [md_eva, plot_eva, st_ctx])
+
+    if POLITICA_OK:
+        entradas_politica = [sel_pol, pol_crecimiento, pol_margen, pol_deuda, pol_cartera, pol_inventario, pol_tasa, pol_dividendos]
+        btn_pol.click(ejecutar_politica, entradas_politica, [plot_pol, md_pol])
+        for componente in entradas_politica[1:]:
+            componente.release(ejecutar_politica, entradas_politica, [plot_pol, md_pol])
 
     btn_send.click(chat_ui, [chat, msg, st_ctx, st_chat_tema], [chat, msg, st_chat_tema])
     msg.submit(chat_ui, [chat, msg, st_ctx, st_chat_tema], [chat, msg, st_chat_tema])
