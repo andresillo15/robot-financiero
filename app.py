@@ -2,13 +2,13 @@
 """app.py
 
 Robot Financiero Inteligente — Versión completa y corregida con:
-- Integración de Google Gemini (gemini-3.6-flash)
+- Integración dual y fluida de Google Gemini (gemini-3.6-flash)
 - Diagnóstico financiero integral (Altman Z-Score, DuPont, liquidez y solvencia)
 - Análisis de mercado, 6 riesgos empresariales y simulación Monte Carlo
-- Calculadora financiera interactiva de 13 modelos con gráficos
+- Calculadora financiera interactiva (interés, amortización, TIR, VAN, WACC, EVA)
 - Generación de reportes ejecutivos en PDF con ReportLab y portada institucional
 - Sincronización completa de st_ctx para el gráfico lateral y memoria del Asistente
-- Configuración de host 0.0.0.0 y puerto dinámico para Render
+- Configuración de host y puerto dinámico para despliegue en Render
 """
 
 import warnings
@@ -140,8 +140,8 @@ def responder_con_llm(pregunta, contexto=None):
         )
         if hasattr(res, "text") and res.text:
             return res.text
-    except Exception:
-        pass
+    except Exception as e:
+        print("Error SDK google-genai:", e)
 
     # Intento 2: SDK google-generativeai
     try:
@@ -151,8 +151,8 @@ def responder_con_llm(pregunta, contexto=None):
         res = model.generate_content(prompt_usuario)
         if hasattr(res, "text") and res.text:
             return res.text
-    except Exception:
-        pass
+    except Exception as e:
+        print("Error SDK google-generativeai:", e)
 
     return None
 
@@ -673,7 +673,7 @@ def interpretar_grafico_montecarlo(sim, nombre_empresa="la empresa"):
     return "\n\n".join(partes)
 
 # ============================================================
-# ANÁLISIS INTEGRADO
+# ANÁLISIS INTEGRADO (CORREGIDO)
 # ============================================================
 
 def analisis_integrado(diag, pack_riesgo):
@@ -848,246 +848,575 @@ def grafico_resumen_asistente(ctx):
     return fig
 
 # ============================================================
-# MERCADO Y PIPELINES
+# REPORTES EN PDF (REPORTLAB)
 # ============================================================
 
-def interpretar_tabla_cotizacion(tickers, ret, vol, dd, etiqueta):
-    if not tickers:
+UNIVERSIDAD_PROYECTO = "Universidad de Nariño"
+INTEGRANTES_PROYECTO = [
+    "Claudia Jackeline Perafán Sánchez",
+    "Karen Dayana Briñes Astaiza",
+    "Karen Gissell Aza Fernández",
+    "Harol Bladimir Tobar Arteaga",
+]
+
+_EMOJI_RE = _re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U00002100-\U0000214F"
+    "\U0000FE0F"
+    "]+"
+)
+
+def _limpiar_para_pdf(texto):
+    if not texto:
         return ""
-    mejor = max(tickers, key=lambda t: ret.get(t, -999))
-    peor = min(tickers, key=lambda t: ret.get(t, 999))
-    ganadoras = [t for t in tickers if ret.get(t, 0) >= 0]
-    perdedoras = [t for t in tickers if ret.get(t, 0) < 0]
-    vol_media = np.mean([vol.get(t, 0) for t in tickers]) * 100
+    t = str(texto)
+    t = _EMOJI_RE.sub("", t)
+    t = _re.sub(r"<[^>]+>", " ", t)
+    t = _re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", t)
+    t = _re.sub(r"\*(.*?)\*", r"<i>\1</i>", t)
+    t = t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    t = t.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
+    t = t.replace("&lt;i&gt;", "<i>").replace("&lt;/i&gt;", "</i>")
+    t = "\n".join(_re.sub(r"[ \t]+", " ", linea).strip() for linea in t.split("\n"))
+    return t.strip()
 
-    color_fondo = "#ECFDF5" if len(ganadoras) >= len(perdedoras) else "#FEF3C7" if len(ganadoras) > 0 else "#FEE2E2"
-    color_borde = "#059669" if len(ganadoras) >= len(perdedoras) else "#D97706" if len(ganadoras) > 0 else "#DC2626"
+def _esc(texto):
+    if texto is None:
+        return ""
+    t = str(texto)
+    t = _EMOJI_RE.sub("", t)
+    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    html = f'''
-    <div style="background:{color_fondo};border:2px solid {color_borde};border-radius:14px;padding:14px 16px;
-                box-shadow:0 2px 8px rgba(15,23,42,0.08);height:100%;">
-      <div style="font-size:14px;font-weight:700;color:#1E40AF;margin-bottom:8px;">
-        🧠 Interpretación del resumen de cotización
-      </div>
-      <div style="font-size:12.5px;color:#334155;line-height:1.55;">
-        <p style="margin:0 0 6px 0;">En el periodo <b>{etiqueta}</b> se compararon <b>{len(tickers)}</b> empresas.</p>
-        <p style="margin:0 0 6px 0;">• <b>Mejor desempeño:</b> {nombre_de(mejor)} ({ret.get(mejor,0):+.2f}%)</p>
-        <p style="margin:0 0 6px 0;">• <b>Peor desempeño:</b> {nombre_de(peor)} ({ret.get(peor,0):+.2f}%)</p>
-        <p style="margin:0 0 6px 0;">• {len(ganadoras)} cerraron en positivo y {len(perdedoras)} en negativo.</p>
-        <p style="margin:0 0 6px 0;">• Volatilidad media del grupo: <b>{vol_media:.1f}%</b> anualizada.</p>
-        <p style="margin:0;font-size:11px;color:#64748B;">
-          ℹ️ Esta lectura se basa en datos históricos. No es una recomendación de inversión.
-        </p>
-      </div>
-    </div>
-    '''
-    return html
+def _nombre_archivo_seguro(nombre):
+    base = str(nombre or "Empresa")
+    base = (base.replace("á", "a").replace("é", "e").replace("í", "i")
+                .replace("ó", "o").replace("ú", "u").replace("ñ", "n")
+                .replace("Á", "A").replace("É", "E").replace("Í", "I")
+                .replace("Ó", "O").replace("Ú", "U").replace("Ñ", "N"))
+    base = _re.sub(r"[^A-Za-z0-9]+", "_", base).strip("_")
+    return base or "Empresa"
 
-def pipeline_mercado(opciones, periodo, anio=None):
+def _crear_logo_financiero():
+    d = Drawing(180, 70)
+    d.add(Rect(0, 0, 180, 70, rx=8, ry=8, fillColor=colors.HexColor("#1E40AF"), strokeColor=None))
+    barras = [(12, 18), (28, 28), (44, 22), (60, 38), (76, 45), (92, 35), (108, 52)]
+    for x, h in barras:
+        d.add(Rect(x, 12, 10, h, fillColor=colors.HexColor("#93C5FD"), strokeColor=None))
+    d.add(Line(12, 20, 118, 58, strokeColor=colors.white, strokeWidth=2.2))
+    d.add(String(130, 38, "RF", fontSize=22, fillColor=colors.white, fontName="Helvetica-Bold"))
+    d.add(String(128, 18, "Robot", fontSize=8, fillColor=colors.HexColor("#BFDBFE"), fontName="Helvetica"))
+    return d
+
+def _fig_a_imagen_pdf(fig, ancho_cm=15.5):
+    if fig is None:
+        return None
     try:
-        precios = descargar_precios(opciones, periodo, anio)
-        etiqueta = _etiqueta_periodo(periodo, anio)
-        tickers = list(precios.columns)
-        base = precios.apply(lambda s: s.dropna().iloc[0])
-        p100 = (precios / base) * 100
-        rets = precios.pct_change().dropna(how="all")
-        vol = rets.std() * np.sqrt(252)
-        ret = (precios.iloc[-1] / base - 1) * 100
-        dd = (precios / precios.cummax() - 1).min() * 100
-
-        fig1, ax1 = plt.subplots(figsize=(9, 4.2))
-        colores = [COLORS["primary"], COLORS["green"], COLORS["yellow"], COLORS["red"], "#7C3AED"]
-        for i, c in enumerate(tickers):
-            ax1.plot(p100.index, p100[c], lw=2.2, color=colores[i%5], label=nombre_de(c))
-        ax1.axhline(100, color=COLORS["muted"], ls="--", lw=1)
-        ax1.set_title(f"Performance Base 100 — {etiqueta}", fontweight="bold")
-        ax1.legend(frameon=True, fancybox=True, fontsize=9)
-        ax1.grid(True, alpha=0.4)
-        plt.tight_layout()
-
-        fig2, ax2 = plt.subplots(figsize=(9, 3.3))
-        for i, c in enumerate(tickers):
-            ax2.plot(rets.index, rets[c]*100, lw=0.9, alpha=0.85, color=colores[i%5], label=nombre_de(c))
-        ax2.axhline(0, color=COLORS["muted"], ls="--")
-        ax2.set_title("Variación diaria (%)", fontweight="bold")
-        ax2.legend(frameon=True, fancybox=True, fontsize=8)
-        ax2.grid(True, alpha=0.4)
-        plt.tight_layout()
-
-        md = "### Resumen tipo cotización\n\n| Símbolo | Empresa | Retorno | Volatilidad | Drawdown |\n| :---: | :--- | :---: | :---: | :---: |\n"
-        for c in tickers:
-            flecha = "▲" if ret[c] >= 0 else "▼"
-            color = COLORS["green"] if ret[c] >= 0 else COLORS["red"]
-            md += f"| **{c}** | {nombre_de(c)} | <span style='color:{color}'>{flecha} {ret[c]:+.2f}%</span> | {vol[c]*100:.2f}% | {dd[c]:.2f}% |\n"
-        md += f"\n> Periodo analizado: **{etiqueta}**"
-
-        interp_html = interpretar_tabla_cotizacion(tickers, ret, vol, dd, etiqueta)
-        return fig1, fig2, md, interp_html, precios, tickers
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150, facecolor=fig.get_facecolor())
+        buf.seek(0)
+        ancho_in, alto_in = fig.get_size_inches()
+        proporcion = (alto_in / ancho_in) if ancho_in else 0.5
+        ancho = ancho_cm * cm
+        alto = ancho * proporcion
+        return RLImage(buf, width=ancho, height=alto)
     except Exception as e:
-        fig, ax = plt.subplots(figsize=(6, 2))
-        ax.text(0.5, 0.5, f"Error: {e}", ha="center", va="center", color=COLORS["red"])
-        ax.axis("off")
-        return fig, fig, f"### Error\n{e}", "", None, []
+        print("No se pudo insertar una gráfica en el PDF:", e)
+        return None
 
-def simular_inv(precios, tickers, monto, p1, p2, p3, p4, p5, periodo, anio=None):
-    if precios is None or not tickers:
-        fig, ax = plt.subplots(figsize=(6, 2.2))
-        ax.text(0.5, 0.5, "Primero ejecuta el análisis de mercado.", ha="center", va="center", color=COLORS["muted"])
-        ax.axis("off")
-        return "Primero ejecuta el análisis de mercado.", fig
+def _grafico_diagnostico_pdf(razones, nombre_empresa="Empresa"):
+    if not razones:
+        return None
     try:
-        etiqueta = _etiqueta_periodo(periodo, anio)
-        pesos = np.array([float(x or 0) for x in (p1, p2, p3, p4, p5)[:len(tickers)]])
-        if pesos.sum() <= 0:
-            raise ValueError("Asigna porcentajes > 0")
-        pesos = pesos / pesos.sum()
-        monto = float(monto)
-        filas, total = [], 0.0
-        for t, w in zip(tickers, pesos):
-            s = precios[t].dropna()
-            inv = monto * w
-            vf = inv * (s.iloc[-1] / s.iloc[0])
-            total += vf
-            filas.append((nombre_de(t), w*100, inv, vf, (vf/inv - 1)*100))
-        md = f"### 💰 Resultado simulación de inversión — {etiqueta}\n\n"
-        md += "| Empresa | % | Invertido | Final | Resultado |\n| :--- | :---: | :---: | :---: | :---: |\n"
-        for n_, w, inv, vf, g in filas:
-            c = COLORS["green"] if g >= 0 else COLORS["red"]
-            md += f"| {n_} | {w:.0f}% | ${inv:,.2f} | ${vf:,.2f} | <span style='color:{c}'>{g:+.2f}%</span> |\n"
-        gt = (total/monto - 1)*100
-        c = COLORS["green"] if gt >= 0 else COLORS["red"]
-        md += f"\n**Total:** ${monto:,.2f} → **${total:,.2f}**  |  Resultado global: <span style='color:{c}'>**{gt:+.2f}%**</span>\n\n"
-        md += interpretar_simulacion_inversion(filas, gt, monto, total, etiqueta)
-        nombres = [f[0] for f in filas]
-        resultados = [f[4] for f in filas]
-        colores_barras = [COLORS["green"] if r >= 0 else COLORS["red"] for r in resultados]
-        fig, ax = plt.subplots(figsize=(7.5, 3.4))
-        barras = ax.bar(nombres, resultados, color=colores_barras, alpha=0.9, edgecolor="white")
+        etiquetas, valores, colores_b = [], [], []
+        pares = [
+            ("Razón Corriente", razones.get("razon_corriente"), False),
+            ("Endeudamiento %", razones.get("endeudamiento"), True),
+            ("ROE %", razones.get("roe"), True),
+            ("ROA %", razones.get("roa"), True),
+            ("Margen Neto %", razones.get("margen_neto"), True),
+        ]
+        for nombre, valor, es_pct in pares:
+            if valor is not None:
+                etiquetas.append(nombre)
+                valores.append(valor * 100 if es_pct else valor)
+                colores_b.append(COLORS["red"] if valor < 0 else COLORS["primary"])
+        if not etiquetas:
+            return None
+        fig, ax = plt.subplots(figsize=(7.5, 3))
+        barras = ax.bar(etiquetas, valores, color=colores_b, alpha=0.9, edgecolor="white")
         ax.axhline(0, color=COLORS["muted"], lw=1)
-        ax.set_title(f"Resultado por empresa — {etiqueta}", fontweight="bold")
-        ax.set_ylabel("% de resultado")
+        for b_, v_ in zip(barras, valores):
+            ax.annotate(f"{v_:.1f}", (b_.get_x()+b_.get_width()/2, b_.get_height()),
+                        ha="center", va="bottom" if v_ >= 0 else "top", fontsize=8, fontweight="bold")
+        ax.set_title(f"Indicadores clave del diagnóstico — {nombre_empresa}", fontweight="bold", fontsize=11)
         ax.grid(True, alpha=0.3, axis="y")
-        for b, r in zip(barras, resultados):
-            ax.annotate(f"{r:+.1f}%", (b.get_x() + b.get_width()/2, b.get_height()),
-                        ha="center", va="bottom" if r >= 0 else "top", fontsize=9, fontweight="bold")
-        plt.xticks(rotation=15, ha="right")
+        plt.xticks(rotation=12, ha="right", fontsize=8.5)
         plt.tight_layout()
-        return md, fig
+        return fig
     except Exception as e:
-        fig, ax = plt.subplots(figsize=(6, 2.2))
-        ax.text(0.5, 0.5, f"Error: {e}", ha="center", va="center", color=COLORS["red"])
-        ax.axis("off")
-        return f"Error: {e}", fig
+        print("No se pudo generar el gráfico de diagnóstico:", e)
+        return None
 
-def cargar_estados(opcion):
-    d = estados_yahoo(ticker_de(opcion))
-    return (d["activo_corriente"], d["pasivo_corriente"], d["inventarios"], d["utilidad_neta"],
-            d["ventas"], d["activos_totales"], d["patrimonio"], d["pasivo_total"],
-            d["utilidades_retenidas"], d["utilidad_operativa"], d["valor_mercado_patrimonio"],
-            d["mensaje"], d["sector"], d["nombre"])
+def generar_pdf(nombre_empresa, diag, pack, sim, integ, pred=None):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+                            rightMargin=1.4*cm, leftMargin=1.4*cm,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm)
+    styles = getSampleStyleSheet()
 
-def run_diag(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre):
-    try:
-        r = calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre or "Empresa")
-        return r["texto_md"], r
-    except Exception as e:
-        return f"<div style='color:#DC2626;'>⚠️ Error: {e}</div>", {}
+    title_style = ParagraphStyle('TitleCustom', parent=styles['Heading1'],
+                                 fontSize=22, textColor=colors.HexColor("#1E40AF"),
+                                 spaceAfter=6, alignment=TA_CENTER, fontName='Helvetica-Bold', leading=26)
+    h2_style = ParagraphStyle('H2Custom', parent=styles['Heading2'],
+                              fontSize=13, textColor=colors.HexColor("#2563EB"),
+                              spaceBefore=8, spaceAfter=4, fontName='Helvetica-Bold')
+    normal = ParagraphStyle('NormalCustom', parent=styles['Normal'],
+                            fontSize=10, leading=13, alignment=TA_JUSTIFY, spaceAfter=3)
+    small = ParagraphStyle('Small', parent=styles['Normal'],
+                           fontSize=8.5, textColor=colors.HexColor("#64748B"), leading=11)
+    uni_style = ParagraphStyle('Uni', parent=styles['Normal'],
+                               fontSize=14, alignment=TA_CENTER,
+                               textColor=colors.HexColor("#1E40AF"), fontName='Helvetica-Bold', spaceAfter=2)
+    integrantes_style = ParagraphStyle('Integrantes', parent=styles['Normal'],
+                                       fontSize=11, alignment=TA_CENTER,
+                                       textColor=colors.HexColor("#334155"), leading=15, spaceAfter=2)
+    caption_style = ParagraphStyle('Caption', parent=styles['Normal'],
+                                   fontSize=9, alignment=TA_CENTER,
+                                   textColor=colors.HexColor("#475569"), spaceBefore=2, spaceAfter=6)
+    analisis_style = ParagraphStyle('Analisis', parent=styles['Normal'],
+                                    fontSize=9.5, leading=12.5, alignment=TA_JUSTIFY,
+                                    textColor=colors.HexColor("#1E293B"), spaceBefore=2, spaceAfter=6,
+                                    backColor=colors.HexColor("#F1F5F9"), borderPadding=6)
 
-def run_riesgo_completo(precios, tickers, diag, sector, nombre_empresa):
-    try:
-        if precios is None or not tickers:
-            return "<div style='color:#64748B;'>Ejecuta primero Mercado con la misma empresa.</div>", {}, None, ""
-        ticker_analisis = tickers[0]
-        m = metricas_mercado(precios[ticker_analisis], nombre_empresa or ticker_analisis)
-        riesgos = seis_riesgos(m, (diag or {}).get("razones"), sector or "N/D")
-        pred = prediccion_simple(m["serie"])
-        md = texto_riesgos(m, riesgos, pred, nombre_empresa or ticker_analisis)
-        fig1, ax1 = plt.subplots(figsize=(7.5, 3.2))
-        ax1.hist(m["retornos"]*100, bins=40, color=COLORS["primary"], alpha=0.85, edgecolor="white")
-        ax1.set_title(f"Rendimientos diarios (%) — {nombre_empresa}", fontweight="bold")
-        ax1.grid(True, alpha=0.3)
-        plt.tight_layout()
-        em = {"bajo": ("🟢", COLORS["green_light"], COLORS["green"]),
-              "medio": ("🟡", COLORS["yellow_light"], COLORS["yellow"]),
-              "alto": ("🔴", COLORS["red_light"], COLORS["red"])}
-        cards = ""
+    story = []
+    nombre_seguro = _esc(nombre_empresa)
+
+    story.append(_crear_logo_financiero())
+    story.append(Spacer(1, 0.35*cm))
+    story.append(Paragraph(_esc(UNIVERSIDAD_PROYECTO).upper(), uni_style))
+    story.append(Spacer(1, 0.15*cm))
+    story.append(Paragraph("<b>Integrantes del proyecto:</b>", integrantes_style))
+    for nom in INTEGRANTES_PROYECTO:
+        story.append(Paragraph(_esc(nom), integrantes_style))
+    story.append(Spacer(1, 0.35*cm))
+    story.append(Paragraph("ROBOT FINANCIERO INTELIGENTE", title_style))
+    story.append(Paragraph("Informe de Análisis Financiero Integral",
+                           ParagraphStyle('Sub', parent=styles['Normal'], fontSize=12,
+                                          alignment=TA_CENTER, textColor=colors.HexColor("#64748B"), spaceAfter=4)))
+    story.append(HRFlowable(width="100%", thickness=2.5, color=colors.HexColor("#2563EB"), spaceBefore=2, spaceAfter=6))
+    story.append(Paragraph(f"<b>Empresa analizada:</b> {nombre_seguro}",
+                           ParagraphStyle('Emp', parent=normal, fontSize=12, alignment=TA_CENTER, spaceAfter=2)))
+    story.append(Paragraph(f"<b>Fecha del informe:</b> {date.today().strftime('%d/%m/%Y')}",
+                           ParagraphStyle('Fec', parent=normal, fontSize=11, alignment=TA_CENTER, spaceAfter=4)))
+    if integ:
+        clasif = integ.get("clasificacion", "N/D").upper()
+        score = integ.get("score", 0)
+        col = {"saludable": "#059669", "precaucion": "#D97706", "alerta": "#DC2626"}.get(integ.get("clasificacion"), "#64748B")
+        story.append(Paragraph(f"<b>Clasificación:</b> <font color='{col}'>{clasif}</font>  &nbsp;|&nbsp;  <b>Score global:</b> {score:.1f}/100",
+                               ParagraphStyle('Clas', parent=normal, fontSize=11, alignment=TA_CENTER, spaceAfter=4)))
+    story.append(Paragraph("Informe generado automáticamente · Uso educativo · No constituye consejo de inversión.", small))
+    story.append(PageBreak())
+
+    # 1. Diagnóstico
+    story.append(Paragraph(f"1. Diagnóstico Financiero — {nombre_seguro}", h2_style))
+    if diag and diag.get("texto_md"):
+        txt = _limpiar_para_pdf(diag["texto_md"])
+        for line in txt.split("\n")[:16]:
+            if line.strip():
+                story.append(Paragraph(line.strip()[:220], normal))
+
+    img_diag = _fig_a_imagen_pdf(_grafico_diagnostico_pdf((diag or {}).get("razones"), nombre_empresa), ancho_cm=15.5)
+    if img_diag:
+        story.append(Spacer(1, 0.15*cm))
+        story.append(img_diag)
+        story.append(Paragraph(f"Gráfico de indicadores clave del diagnóstico — {nombre_seguro}", caption_style))
+        razones = (diag or {}).get("razones") or {}
+        analisis_diag = []
+        if razones.get("razon_corriente") is not None:
+            analisis_diag.append(f"La razón corriente ({razones['razon_corriente']:.2f}) indica la capacidad de pago a corto plazo.")
+        if razones.get("endeudamiento") is not None:
+            analisis_diag.append(f"El endeudamiento ({razones['endeudamiento']*100:.1f}%) muestra qué porcentaje de los activos se financia con deuda.")
+        if razones.get("roe") is not None:
+            analisis_diag.append(f"El ROE ({razones['roe']*100:.1f}%) refleja la rentabilidad generada para los accionistas.")
+        if analisis_diag:
+            story.append(Paragraph("<b>Análisis del gráfico:</b> " + " ".join(analisis_diag), analisis_style))
+
+    if integ and integ.get("score") is not None:
+        ctx_visual = {"score": integ.get("score"), "riesgos": (pack or {}).get("riesgos"), "nombre": nombre_empresa}
+        fig_resumen = grafico_resumen_asistente(ctx_visual)
+        img_resumen = _fig_a_imagen_pdf(fig_resumen, ancho_cm=9)
+        if img_resumen:
+            story.append(Spacer(1, 0.15*cm))
+            story.append(img_resumen)
+            story.append(Paragraph("Score integrado y semáforo de los 6 riesgos", caption_style))
+            story.append(Paragraph(
+                f"<b>Análisis del panel visual:</b> El score de {integ.get('score',0):.0f}/100 resume la salud financiera global. "
+                f"Las barras del semáforo muestran el nivel de cada uno de los 6 riesgos empresariales (bajo = verde, medio = amarillo, alto = rojo).",
+                analisis_style))
+
+    # 2. Riesgos
+    story.append(Paragraph("2. Análisis de Riesgos", h2_style))
+    if pack and pack.get("riesgos"):
+        data = [["Riesgo", "Nivel", "Detalle"]]
         for k, lab in {"mercado": "Mercado", "credito": "Crédito", "liquidez": "Liquidez",
                        "operacional": "Operacional", "legal": "Legal", "reputacional": "Reputacional"}.items():
-            niv, det = riesgos[k]
-            icon, bg, border = em.get(niv, ("⚪", "#F1F5F9", "#94A3B8"))
-            cards += f'<div style="background:{bg};border-left:5px solid {border};padding:12px 14px;border-radius:10px;margin-bottom:8px;"><div style="font-weight:700;font-size:14px;">{icon} {lab} — {niv.upper()}</div><div style="font-size:12px;color:#475569;margin-top:3px;">{det}</div></div>'
-        tablero = f'<div style="background:white;border:1px solid #E2E8F0;border-radius:12px;padding:16px;"><div style="font-size:16px;font-weight:700;margin-bottom:12px;">🚦 Tablero de Alertas — {nombre_empresa}</div>{cards}</div>'
-        return md, {"metricas": m, "riesgos": riesgos, "prediccion": pred, "fig_riesgo": fig1}, fig1, tablero
-    except Exception as e:
-        fig, ax = plt.subplots(figsize=(5, 2)); ax.axis("off")
-        return f"<div style='color:#DC2626;'>⚠️ Error: {e}</div>", {}, fig, ""
+            niv, det = pack["riesgos"].get(k, ("N/D", ""))
+            data.append([lab, niv.upper(), _esc(det)])
+        t = Table(data, colWidths=[3.5*cm, 2.5*cm, 9.5*cm])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#2563EB")),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
+            ('BACKGROUND', (0,1), (-1,-1), colors.HexColor("#F8FAFC")),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('TOPPADDING', (0,0), (-1,-1), 4),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 0.15*cm))
 
-def run_sim(pack, n, umbral):
-    try:
+    img_riesgo = _fig_a_imagen_pdf((pack or {}).get("fig_riesgo"), ancho_cm=15.5)
+    if img_riesgo:
+        story.append(img_riesgo)
+        story.append(Paragraph(f"Distribución de rendimientos diarios — {nombre_seguro}", caption_style))
         m = (pack or {}).get("metricas") or {}
-        if not m:
-            return "Calcula primero Riesgos.", {}, None, ""
-        nombre_emp = m.get("nombre") or "la empresa"
-        sim = simulacion_decision(m["mu_diario"], m["sigma_diario"], int(n or 2000), float(umbral or 0.3))
-        fig, ax = plt.subplots(figsize=(7.5, 3.2))
-        ax.hist(sim["distribucion"]*100, bins=40, color=COLORS["green"], alpha=0.85, edgecolor="white")
-        ax.axvline(0, color=COLORS["red"], ls="--", lw=1.5)
-        ax.set_title(f"Monte Carlo → {sim['decision'].upper()}", fontweight="bold")
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        sim["fig_mc"] = fig
-        interpretacion = interpretar_grafico_montecarlo(sim, nombre_emp)
-        return sim["detalle"], sim, fig, interpretacion
-    except Exception as e:
-        fig, ax = plt.subplots(figsize=(5, 2)); ax.axis("off")
-        return f"Error: {e}", {}, fig, ""
+        if m:
+            story.append(Paragraph(
+                f"<b>Análisis del histograma de rendimientos:</b> Muestra cómo se distribuyen las variaciones diarias del precio. "
+                f"Volatilidad anualizada ≈ {m.get('volatilidad_anual',0)*100:.1f}%. "
+                f"Máximo drawdown histórico: {m.get('max_drawdown',0)*100:.1f}%. "
+                f"VaR 1 día (95%): {m.get('var_1d_95',0)*100:.2f}%. Una distribución más ancha indica mayor riesgo de mercado.",
+                analisis_style))
 
-def run_integ(diag, pack, sim):
+    story.append(PageBreak())
+
+    # 3. Simulación
+    story.append(Paragraph("3. Simulación Monte Carlo y Asesoramiento", h2_style))
+    if sim and sim.get("detalle"):
+        for line in _limpiar_para_pdf(sim["detalle"]).split("\n"):
+            if line.strip():
+                story.append(Paragraph(line.strip(), normal))
+    if pred:
+        story.append(Paragraph(
+            f"Predicción 30 días: ${pred['proyeccion_30d']:,.2f} ({pred['cambio_esperado_pct']:+.1f}%) — Tendencia {pred['tendencia']}",
+            normal))
+
+    img_mc = _fig_a_imagen_pdf((sim or {}).get("fig_mc"), ancho_cm=15.5)
+    if img_mc:
+        story.append(Spacer(1, 0.15*cm))
+        story.append(img_mc)
+        story.append(Paragraph("Distribución de escenarios — Simulación Monte Carlo", caption_style))
+        if sim:
+            p_bad = sim.get("probabilidad_desfavorable", 0) * 100
+            ret_e = sim.get("retorno_esperado", 0) * 100
+            story.append(Paragraph(
+                f"<b>Análisis de la simulación Monte Carlo:</b> Se generaron {sim.get('n_escenarios',0):,} escenarios posibles. "
+                f"Aproximadamente {p_bad:.0f}% terminaron en pérdida y el retorno esperado promedio fue {ret_e:+.1f}%. "
+                f"La línea roja vertical marca el punto de equilibrio (0%). La decisión automática fue: <b>{sim.get('decision','N/D').upper()}</b>.",
+                analisis_style))
+
+    # 4. Interpretación
+    story.append(Paragraph("4. Interpretación integral de resultados", h2_style))
+    narrativa = _limpiar_para_pdf(interpretacion_narrativa(nombre_empresa, diag, pack, sim, integ))
+    for parrafo in narrativa.split(". "):
+        parrafo = parrafo.strip()
+        if parrafo:
+            texto = parrafo if parrafo.endswith(".") else parrafo + "."
+            story.append(Paragraph(texto, normal))
+
+    if integ:
+        clasif = integ.get("clasificacion", "")
+        consejo = {
+            "saludable": f"{nombre_seguro} se ve en buen estado en general. Lo recomendable es seguir vigilando periódicamente su liquidez y su rentabilidad para mantener esta situación favorable.",
+            "precaucion": f"{nombre_seguro} muestra señales mixtas. Se recomienda revisar de cerca el nivel de deuda y la volatilidad del precio antes de tomar decisiones importantes.",
+            "alerta": f"{nombre_seguro} presenta puntos débiles que conviene resolver pronto, principalmente en capacidad de pago a corto plazo y nivel de deuda. Se sugiere actuar con cautela."
+        }.get(clasif, "Se recomienda revisar los indicadores principales antes de tomar decisiones.")
+        story.append(Spacer(1, 0.2*cm))
+        story.append(Paragraph("Asesoramiento final", h2_style))
+        story.append(Paragraph(consejo, normal))
+
+    story.append(Spacer(1, 0.4*cm))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#E2E8F0")))
+    story.append(Paragraph(f"{UNIVERSIDAD_PROYECTO} · Robot Financiero Inteligente · Datos Yahoo Finance · Uso educativo", small))
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+def crear_reporte_pdf(nombre, diag, pack, sim, ctx):
+    if not REPORTLAB_OK:
+        return None, "⚠️ No se pudo generar el PDF: la librería `reportlab` no está disponible en este entorno."
+    if not diag and not pack:
+        return None, "⚠️ Aún no hay datos suficientes. Ejecuta primero **Diagnóstico** y **Riesgos**."
     try:
-        if not diag or not pack:
-            return "Completa Diagnóstico y Riesgos primero.", {}, {}
-        integ = analisis_integrado(diag, pack)
-        nombre = integ.get("nombre") or "Empresa"
-        narrativa = interpretacion_narrativa(nombre, diag, pack, sim, integ)
-        texto = integ["texto_md"] + f"\n\n#### 🧠 Interpretación\n{narrativa}"
-        ctx = {
-            "z_info": diag.get("z_info"),
-            "clasificacion": integ.get("clasificacion"),
-            "decision": (sim or {}).get("decision"),
-            "score": integ.get("score"),
-            "nombre": nombre,
-            "integ": integ,
-            "razones": (diag or {}).get("razones"),
-            "riesgos": (pack or {}).get("riesgos"),
-            "metricas": (pack or {}).get("metricas"),
-            "sim": sim or {},
-        }
-        return texto, integ, ctx
+        integ = (ctx or {}).get("integ") or {}
+        pred = (pack or {}).get("prediccion")
+        buffer = generar_pdf(nombre or "Empresa", diag or {}, pack or {}, sim or {}, integ, pred)
+        nombre_archivo = f"Informe_{_nombre_archivo_seguro(nombre)}_{date.today().strftime('%Y%m%d')}.pdf"
+        path = os.path.join(tempfile.gettempdir(), nombre_archivo)
+        with open(path, "wb") as f:
+            f.write(buffer.getvalue())
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return None, "⚠️ El PDF se generó vacío. Intenta nuevamente."
+        return path, f"✅ Informe **{nombre_archivo}** generado con logo, nombres completos, gráficas e interpretación completa. Descárgalo abajo."
     except Exception as e:
-        return f"Error: {e}", {}, {}
+        print("Error PDF:", e)
+        return None, f"⚠️ Error al generar el PDF: {e}"
 
-def actualizar_ctx_mercado(ctx, precios, tickers, periodo, anio):
-    ctx = dict(ctx or {})
-    if precios is None or not tickers:
-        return ctx
-    etiqueta = _etiqueta_periodo(periodo, anio)
-    resumen = []
-    for t in tickers:
-        try:
-            s = precios[t].dropna()
-            r = (s.iloc[-1] / s.iloc[0] - 1) * 100
-            resumen.append(f"{nombre_de(t)} ({t}): {r:+.1f}%")
-        except Exception:
-            resumen.append(f"{nombre_de(t)} ({t})")
-    ctx["mercado_comparado"] = {"periodo": etiqueta, "empresas": resumen}
-    return ctx
+# ============================================================
+# FUNCIONES DE APOYO Y CALCULADORA
+# ============================================================
 
-def actualizar_ctx_calculadora(ctx, tipo, texto_resultado):
-    ctx = dict(ctx or {})
-    if tipo and texto_resultado:
-        resumen = _re.sub(r"<[^>]+>", "", str(texto_resultado)).replace("**", "").strip()
-        ctx["ultimo_calculo"] = f"{tipo}: {resumen[:200]}"
-    return ctx
+def _fig_vacia(msg="Ingresa los datos para ver el gráfico"):
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.text(0.5, 0.5, msg, ha="center", va="center", color=COLORS["muted"], fontsize=10)
+    ax.axis("off")
+    return fig
+
+def grafico_calculadora(tipo, v1, v2, v3, v4, v5):
+    try:
+        if tipo in ("Interés Simple", "Interés Compuesto"):
+            c, r, t = _pos(v1, "Capital"), _tasa(v2), _pos(v3, "Tiempo")
+            n_pasos = max(2, int(round(t)) + 1)
+            xs = np.linspace(0, t, n_pasos)
+            if tipo == "Interés Simple":
+                ys = [c * (1 + r * x) for x in xs]
+                titulo = "Crecimiento del capital — Interés Simple"
+            else:
+                ys = [c * (1 + r) ** x for x in xs]
+                titulo = "Crecimiento del capital — Interés Compuesto"
+            fig, ax = plt.subplots(figsize=(7, 3.4))
+            ax.plot(xs, ys, marker="o", color=COLORS["primary"], lw=2.2)
+            ax.fill_between(xs, c, ys, color=COLORS["primary_light"], alpha=0.6)
+            ax.axhline(c, color=COLORS["muted"], ls="--", lw=1, label="Capital inicial")
+            ax.set_title(titulo, fontweight="bold")
+            ax.set_xlabel("Tiempo")
+            ax.set_ylabel("Monto")
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            return fig
+        if tipo in ("Valor Futuro", "Valor Presente"):
+            if tipo == "Valor Futuro":
+                base, resultado = _pos(v1, "VP"), valor_futuro(v1, v2, v3)
+                etiquetas = ["Valor Presente", "Valor Futuro"]
+            else:
+                base, resultado = _pos(v1, "VF"), valor_presente(v1, v2, v3)
+                etiquetas = ["Valor Futuro", "Valor Presente"]
+            fig, ax = plt.subplots(figsize=(6, 3.4))
+            barras = ax.bar(etiquetas, [base, resultado], color=[COLORS["muted"], COLORS["primary"]])
+            for b, val in zip(barras, [base, resultado]):
+                ax.annotate(fmt(val), (b.get_x()+b.get_width()/2, b.get_height()), ha="center", va="bottom", fontsize=9)
+            ax.set_title(f"Comparación — {tipo}", fontweight="bold")
+            ax.grid(True, alpha=0.3, axis="y")
+            plt.tight_layout()
+            return fig
+        if tipo in ("Anualidad VP", "Anualidad VF"):
+            cuota, r, n = _pos(v1, "Cuota"), _tasa(v2), int(_pos(v3, "n"))
+            periodos = np.arange(1, n + 1)
+            fig, ax = plt.subplots(figsize=(7, 3.4))
+            ax.bar(periodos, [cuota] * n, color=COLORS["primary"], alpha=0.85)
+            ax.set_title(f"Flujo de cuotas — {tipo}", fontweight="bold")
+            ax.set_xlabel("Periodo")
+            ax.set_ylabel("Cuota")
+            ax.grid(True, alpha=0.3, axis="y")
+            plt.tight_layout()
+            return fig
+        if tipo == "Amortización":
+            df, cuota = tabla_amortizacion(v1, v2, int(v3))
+            fig, ax = plt.subplots(figsize=(7.5, 3.6))
+            ax.bar(df["Periodo"], df["Interés"], color=COLORS["red"], alpha=0.85, label="Interés")
+            ax.bar(df["Periodo"], df["Amortización"], bottom=df["Interés"], color=COLORS["green"], alpha=0.85, label="Amortización")
+            ax2 = ax.twinx()
+            ax2.plot(df["Periodo"], df["Saldo"], color=COLORS["header"], marker="o", markersize=3, lw=1.6, label="Saldo")
+            ax2.set_ylabel("Saldo")
+            ax.set_title("Composición de la cuota y saldo — Amortización", fontweight="bold")
+            ax.set_xlabel("Periodo")
+            ax.set_ylabel("Cuota")
+            l1, lab1 = ax.get_legend_handles_labels()
+            l2, lab2 = ax2.get_legend_handles_labels()
+            ax.legend(l1 + l2, lab1 + lab2, fontsize=8, loc="upper right")
+            ax.grid(True, alpha=0.3, axis="y")
+            plt.tight_layout()
+            return fig
+        if tipo == "Conversión de tasas":
+            ef, nom, efd = conversion_tasas(v1, int(v2), int(v3), v4 or "nominal")
+            fig, ax = plt.subplots(figsize=(6, 3.4))
+            vals = [ef * 100, nom * 100, efd * 100]
+            etiquetas = ["Efectiva anual", "Nominal destino", "Efectiva destino"]
+            ax.bar(etiquetas, vals, color=[COLORS["primary"], COLORS["yellow"], COLORS["green"]])
+            for i, v in enumerate(vals):
+                ax.annotate(f"{v:.2f}%", (i, v), ha="center", va="bottom", fontsize=9)
+            ax.set_title("Conversión de tasas", fontweight="bold")
+            ax.set_ylabel("%")
+            ax.grid(True, alpha=0.3, axis="y")
+            plt.xticks(rotation=10)
+            plt.tight_layout()
+            return fig
+        if tipo in ("TIR", "VAN"):
+            fl = [float(x.strip()) for x in str(v4).replace(";", ",").split(",") if x.strip()]
+            periodos = np.arange(len(fl))
+            colores_fl = [COLORS["red"] if x < 0 else COLORS["green"] for x in fl]
+            fig, ax = plt.subplots(figsize=(7, 3.4))
+            ax.bar(periodos, fl, color=colores_fl, alpha=0.9)
+            ax.axhline(0, color=COLORS["muted"], lw=1)
+            ax.set_title(f"Flujos de caja — {tipo}", fontweight="bold")
+            ax.set_xlabel("Periodo")
+            ax.set_ylabel("Flujo")
+            ax.grid(True, alpha=0.3, axis="y")
+            plt.tight_layout()
+            return fig
+        if tipo == "CAPM":
+            rf, beta, rm = _tasa(v1), float(v2), _tasa(v3)
+            ke = calcular_capm(rf, beta, rm)
+            fig, ax = plt.subplots(figsize=(6, 3.4))
+            etiquetas = ["Rf (libre de riesgo)", "Rm (mercado)", "Ke (CAPM)"]
+            vals = [rf * 100, rm * 100, ke * 100]
+            ax.bar(etiquetas, vals, color=[COLORS["muted"], COLORS["yellow"], COLORS["primary"]])
+            for i, v in enumerate(vals):
+                ax.annotate(f"{v:.2f}%", (i, v), ha="center", va="bottom", fontsize=9)
+            ax.set_title("CAPM — Costo del equity", fontweight="bold")
+            ax.set_ylabel("%")
+            ax.grid(True, alpha=0.3, axis="y")
+            plt.tight_layout()
+            return fig
+        if tipo == "WACC":
+            e, d = _pos(v3, "E"), max(0.0, float(v4 or 0))
+            total = e + d
+            fig, ax = plt.subplots(figsize=(5.5, 3.6))
+            if total > 0:
+                ax.pie([e, d], labels=[f"Equity\n{e/total*100:.0f}%", f"Deuda\n{d/total*100:.0f}%"],
+                       colors=[COLORS["primary"], COLORS["yellow"]], autopct=None, startangle=90,
+                       wedgeprops={"edgecolor": "white"})
+            ax.set_title("Estructura de capital — WACC", fontweight="bold")
+            plt.tight_layout()
+            return fig
+        if tipo == "EVA":
+            nopat, wacc_, capital = float(v1), _tasa(v2), _pos(v3, "Capital")
+            costo_capital = wacc_ * capital
+            eva = nopat - costo_capital
+            fig, ax = plt.subplots(figsize=(6, 3.4))
+            etiquetas = ["NOPAT", "Costo de capital", "EVA"]
+            vals = [nopat, costo_capital, eva]
+            colores_b = [COLORS["primary"], COLORS["yellow"], COLORS["green"] if eva >= 0 else COLORS["red"]]
+            ax.bar(etiquetas, vals, color=colores_b)
+            ax.axhline(0, color=COLORS["muted"], lw=1)
+            for i, v in enumerate(vals):
+                ax.annotate(fmt(v), (i, v), ha="center", va="bottom" if v >= 0 else "top", fontsize=8)
+            ax.set_title("EVA — Valor Económico Agregado", fontweight="bold")
+            ax.grid(True, alpha=0.3, axis="y")
+            plt.tight_layout()
+            return fig
+        return _fig_vacia("Selecciona un tipo de cálculo")
+    except Exception as e:
+        return _fig_vacia(f"No se pudo graficar: {e}")
+
+def run_calc(tipo, v1, v2, v3, v4, v5):
+    try:
+        if tipo == "Interés Simple":
+            i, m = interes_simple(v1, v2, v3)
+            texto = f"**Interés:** {fmt(i)}  |  **Monto:** {fmt(m)}"
+        elif tipo == "Interés Compuesto":
+            i, m = interes_compuesto(v1, v2, v3)
+            texto = f"**Interés:** {fmt(i)}  |  **Monto:** {fmt(m)}"
+        elif tipo == "Valor Futuro":
+            texto = f"**VF:** {fmt(valor_futuro(v1, v2, v3))}"
+        elif tipo == "Valor Presente":
+            texto = f"**VP:** {fmt(valor_presente(v1, v2, v3))}"
+        elif tipo == "Anualidad VP":
+            texto = f"**VP Anualidad:** {fmt(vp_anualidad(v1, v2, v3, v4 or 'ordinaria'))}"
+        elif tipo == "Anualidad VF":
+            texto = f"**VF Anualidad:** {fmt(vf_anualidad(v1, v2, v3, v4 or 'ordinaria'))}"
+        elif tipo == "Amortización":
+            df, cuota = tabla_amortizacion(v1, v2, int(v3))
+            texto = f"**Cuota:** {fmt(cuota)}\n\n```\n{df.head(10).to_string(index=False)}\n```"
+        elif tipo == "Conversión de tasas":
+            ef, nom, efd = conversion_tasas(v1, int(v2), int(v3), v4 or "nominal")
+            texto = f"**Efectiva:** {ef*100:.2f}%  |  **Nominal dest:** {nom*100:.2f}%  |  **Ef. dest:** {efd*100:.2f}%"
+        elif tipo == "TIR":
+            fl = [float(x.strip()) for x in str(v4).replace(";", ",").split(",") if x.strip()]
+            texto = f"**TIR:** {calcular_tir(fl)*100:.2f}%"
+        elif tipo == "VAN":
+            fl = [float(x.strip()) for x in str(v4).replace(";", ",").split(",") if x.strip()]
+            van = calcular_van(fl, float(v2))
+            texto = f"**VAN:** {fmt(van)} → {'viable' if van>0 else 'no viable' if van<0 else 'equilibrio'}"
+        elif tipo == "CAPM":
+            texto = f"**Ke:** {calcular_capm(v1, v2, v3)*100:.2f}%"
+        elif tipo == "WACC":
+            d = float(v4) if v4 not in (None, "") else 0
+            texto = f"**WACC:** {calcular_wacc(v1, v2, v3, d, v5 or 0.25)*100:.2f}%"
+        elif tipo == "EVA":
+            e = calcular_eva(v1, v2, v3)
+            texto = f"**EVA:** {fmt(e)} → {'creando' if e>0 else 'destruyendo' if e<0 else 'equilibrio'} valor"
+        else:
+            texto = "Elige un cálculo"
+        fig = grafico_calculadora(tipo, v1, v2, v3, v4, v5)
+        return texto, fig
+    except Exception as e:
+        return f"**Error:** {e}", _fig_vacia("No se pudo calcular")
+
+def _calc_tab(tipo, v1, v2, v3, v4, v5, ctx):
+    texto, fig = run_calc(tipo, v1, v2, v3, v4, v5)
+    nuevo_ctx = actualizar_ctx_calculadora(ctx, tipo, texto)
+    return texto, fig, nuevo_ctx
+
+DEFINICIONES_CALC = {
+    "Interés Simple": "El interés simple se calcula siempre sobre el mismo capital inicial. Fórmula: I = C × r × t.",
+    "Interés Compuesto": "El interés compuesto se calcula sobre el capital MÁS los intereses ya generados. Fórmula: M = C × (1+r)^n.",
+    "Valor Futuro": "Si tengo esta plata hoy y la invierto a esta tasa, ¿cuánto tendré en el futuro? VF = VP × (1+r)^n.",
+    "Valor Presente": "Si quiero tener cierta cantidad en el futuro, ¿cuánto necesito invertir hoy? VP = VF / (1+r)^n.",
+    "Anualidad VP": "Valor presente de una serie de cuotas iguales. Ordinaria = pago al final del periodo; anticipada = al inicio.",
+    "Anualidad VF": "Valor futuro de una serie de cuotas iguales.",
+    "Amortización": "Muestra cuota por cuota cómo se va pagando un préstamo (interés + abono a capital).",
+    "Conversión de tasas": "Convierte una tasa a su equivalente en otra frecuencia (nominal ↔ efectiva).",
+    "TIR": "Tasa Interna de Retorno: rentabilidad real de un proyecto. Si TIR > costo de capital, conviene.",
+    "VAN": "Valor Actual Neto: si es positivo el proyecto crea valor; si es negativo, destruye valor.",
+    "CAPM": "Estima la rentabilidad que debería exigir un inversionista según el riesgo (beta) de la acción.",
+    "WACC": "Costo promedio ponderado de capital: tasa mínima que la empresa debe ganar para no destruir valor.",
+    "EVA": "Valor Económico Agregado: EVA > 0 crea valor; EVA < 0 lo destruye.",
+}
+
+MENSAJE_BIENVENIDA = (
+    "👋 ¡Hola! Soy **FinanIA**, el asistente del Robot Financiero Inteligente.\n\n"
+    "Puedo ayudarte a:\n"
+    "- 📊 Interpretar el diagnóstico y los riesgos de una empresa.\n"
+    "- 💡 Explicarte conceptos financieros (WACC, ROE, VAN, TIR, Z de Altman, y más).\n"
+    "- 💰 Opinar si conviene invertir, según los datos que ya calculaste.\n"
+    "- 🧠 Responder preguntas abiertas gracias a mi motor de IA generativa Gemini.\n\n"
+    "Para empezar, ve a la pestaña **Mercado & Inversión** o **Diagnóstico & Riesgos**, "
+    "carga o compara una empresa, y luego pregúntame lo que quieras aquí.\n\n"
+    "¿En qué te ayudo hoy?"
+)
+
+def iniciar_chat():
+    return [{"role": "assistant", "content": MENSAJE_BIENVENIDA}], None
+
+def chat_ui(hist, msg, ctx, tema):
+    if not msg or not str(msg).strip():
+        return hist, "", tema
+    try:
+        resp, nuevo_tema = chatbot_responder(msg, ctx or {}, tema)
+    except Exception as e:
+        resp = f"⚠️ Error interno del asistente: {e}. Intenta de nuevo o reformula la pregunta."
+        nuevo_tema = tema
+    hist = list(hist or [])
+    hist.append({"role": "user", "content": msg})
+    hist.append({"role": "assistant", "content": resp})
+    return hist, "", nuevo_tema
+
+def sugerencia_rapida(pregunta, hist, ctx, tema):
+    return chat_ui(hist, pregunta, ctx, tema)
+
+CSS = """
+.gradio-container { background: #F8FAFC !important; font-family: Inter, system-ui, sans-serif !important; }
+footer { display: none !important; }
+"""
+
+_ANIO_ACTUAL = date.today().year
+OPCIONES_ANIO = ["Automático (usar periodo)"] + [str(a) for a in range(_ANIO_ACTUAL, _ANIO_ACTUAL - 11, -1)]
 
 # ============================================================
 # INTERFAZ GRADIO COMPLETA (UI)
