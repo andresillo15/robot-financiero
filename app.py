@@ -2,7 +2,7 @@
 """app.py
 
 Robot Financiero Inteligente — Versión completa y corregida con:
-- Integración de Google Gemini (gemini-3.6-flash)
+- Integración de Google Gemini (gemini-2.0-flash)
 - Diagnóstico financiero integral (Altman Z-Score, DuPont, liquidez y solvencia)
 - Análisis de mercado, 6 riesgos empresariales y simulación Monte Carlo
 - Calculadora financiera interactiva de 13 modelos con gráficos
@@ -75,7 +75,7 @@ plt.rcParams.update({
 })
 
 # ============================================================
-# ASISTENTE CONVERSACIONAL Y MOTOR GEMINI (gemini-3.6-flash)
+# ASISTENTE CONVERSACIONAL Y MOTOR GEMINI (gemini-2.0-flash)
 # ============================================================
 
 SYSTEM_PROMPT_ASISTENTE = """
@@ -139,8 +139,9 @@ def responder_con_llm(pregunta, contexto=None):
             model="gemini-2.0-flash",
             contents=prompt_usuario,
         )
-        if hasattr(res, "text") and res.text:
-            return res.text
+        texto = getattr(res, "text", None)
+        if texto:
+            return texto
         print(f"[FinanIA] google-genai respondió sin texto útil: {res!r}")
     except Exception as e:
         print(f"[FinanIA] Falló SDK google-genai: {type(e).__name__}: {e}")
@@ -151,14 +152,16 @@ def responder_con_llm(pregunta, contexto=None):
         gai.configure(api_key=api_key)
         model = gai.GenerativeModel("gemini-2.0-flash")
         res = model.generate_content(prompt_usuario)
-        if hasattr(res, "text") and res.text:
-            return res.text
+        texto = getattr(res, "text", None)
+        if texto:
+            return texto
+        print(f"[FinanIA] google-generativeai respondió sin texto útil: {res!r}")
     except Exception as e:
         print(f"[FinanIA] Falló SDK google-generativeai: {type(e).__name__}: {e}")
 
     print("[FinanIA] Ambos SDKs de Gemini fallaron. Usando respuestas basadas en reglas.")
     return None
-    
+
 # ============================================================
 # CATÁLOGO DE EMPRESAS
 # ============================================================
