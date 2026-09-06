@@ -2,7 +2,7 @@
 """app.py
 
 Robot Financiero Inteligente — Versión completa y corregida con:
-- Integración de Google Gemini (gemini-2.0-flash)
+- Integración de Google Gemini (gemini-3.6-flash)
 - Diagnóstico financiero integral (Altman Z-Score, DuPont, liquidez y solvencia)
 - Análisis de mercado, 6 riesgos empresariales y simulación Monte Carlo
 - Calculadora financiera interactiva de 13 modelos con gráficos
@@ -76,7 +76,7 @@ plt.rcParams.update({
 })
 
 # ============================================================
-# ASISTENTE CONVERSACIONAL Y MOTOR GEMINI (gemini-2.0-flash)
+# ASISTENTE CONVERSACIONAL Y MOTOR GEMINI (gemini-3.6-flash)
 # ============================================================
 
 SYSTEM_PROMPT_ASISTENTE = """
@@ -141,7 +141,7 @@ def responder_con_llm(pregunta, contexto=None):
         from google import genai
         client = genai.Client(api_key=api_key)
         res = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.6-flash",
             contents=prompt_usuario,
         )
         texto = getattr(res, "text", None)
@@ -156,7 +156,7 @@ def responder_con_llm(pregunta, contexto=None):
     try:
         import google.generativeai as gai
         gai.configure(api_key=api_key)
-        model = gai.GenerativeModel("gemini-2.0-flash")
+        model = gai.GenerativeModel("gemini-3.6-flash")
         res = model.generate_content(prompt_usuario)
         texto = getattr(res, "text", None)
         if texto:
