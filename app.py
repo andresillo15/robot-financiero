@@ -12,6 +12,7 @@ Robot Financiero Inteligente — Versión completa y corregida con:
 """
 
 import warnings
+import sys
 from datetime import date, timedelta
 import io
 import os
@@ -114,11 +115,15 @@ def _contexto_a_texto(contexto):
             partes.append(f"Riesgos en nivel ALTO: {', '.join(altos)}.")
     return " ".join(partes) if partes else "Aún no hay datos financieros cargados por el usuario."
 
+def _log_finania(msg):
+    print(f"[FinanIA] {msg}", file=sys.stderr, flush=True)
+
 def responder_con_llm(pregunta, contexto=None):
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("[FinanIA] GEMINI_API_KEY no está configurada. Usando respuestas basadas en reglas.")
+        _log_finania("GEMINI_API_KEY no está configurada. Usando respuestas basadas en reglas.")
         return None
+    _log_finania(f"GEMINI_API_KEY detectada (empieza con '{api_key[:4]}...', longitud {len(api_key)}). Intentando llamar a Gemini.")
 
     info_contexto = _contexto_a_texto(contexto)
     prompt_usuario = f"""
@@ -141,10 +146,11 @@ def responder_con_llm(pregunta, contexto=None):
         )
         texto = getattr(res, "text", None)
         if texto:
+            _log_finania("google-genai respondió correctamente.")
             return texto
-        print(f"[FinanIA] google-genai respondió sin texto útil: {res!r}")
+        _log_finania(f"google-genai respondió sin texto útil: {res!r}")
     except Exception as e:
-        print(f"[FinanIA] Falló SDK google-genai: {type(e).__name__}: {e}")
+        _log_finania(f"Falló SDK google-genai: {type(e).__name__}: {e}")
 
     # Intento 2: SDK google-generativeai
     try:
@@ -154,12 +160,13 @@ def responder_con_llm(pregunta, contexto=None):
         res = model.generate_content(prompt_usuario)
         texto = getattr(res, "text", None)
         if texto:
+            _log_finania("google-generativeai respondió correctamente.")
             return texto
-        print(f"[FinanIA] google-generativeai respondió sin texto útil: {res!r}")
+        _log_finania(f"google-generativeai respondió sin texto útil: {res!r}")
     except Exception as e:
-        print(f"[FinanIA] Falló SDK google-generativeai: {type(e).__name__}: {e}")
+        _log_finania(f"Falló SDK google-generativeai: {type(e).__name__}: {e}")
 
-    print("[FinanIA] Ambos SDKs de Gemini fallaron. Usando respuestas basadas en reglas.")
+    _log_finania("Ambos SDKs de Gemini fallaron. Usando respuestas basadas en reglas.")
     return None
 
 # ============================================================
