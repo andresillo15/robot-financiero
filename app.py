@@ -693,25 +693,47 @@ def simulacion_decision(mu, sigma, n=2000, umbral=0.30, horizonte=252):
     dist = np.prod(1 + shocks, axis=1) - 1
     p_bad = float(np.mean(dist < 0))
     ret_e = float(np.mean(dist))
+
     if p_bad > umbral:
         decision, motivo = "rechazar", f"P(pérdida)={p_bad*100:.1f}% > umbral {umbral*100:.0f}%"
+        color_dec, bg_dec = COLORS["red"], COLORS["red_light"]
     elif p_bad > umbral / 2:
         decision, motivo = "revisar", f"P(pérdida)={p_bad*100:.1f}% zona intermedia"
+        color_dec, bg_dec = COLORS["yellow"], COLORS["yellow_light"]
     else:
         decision = "aceptar" if ret_e > 0 else "revisar"
         motivo = f"P(pérdida)={p_bad*100:.1f}%, retorno esperado {ret_e*100:.1f}%"
-    detalle = f"""**Decisión de la simulación: {decision.upper()}**
+        color_dec, bg_dec = COLORS["green"], COLORS["green_light"]
 
-{motivo}
+    tarjetas_sim = [
+        _tarjeta_indicador("🎯", "Retorno Esperado", f"{ret_e*100:+.2f}%", "Promedio de escenarios", "bien" if ret_e >= 0 else "mal"),
+        _tarjeta_indicador("🛑", "P(Pérdida)", f"{p_bad*100:.1f}%", f"Umbral definido: {umbral*100:.0f}%", "mal" if p_bad > umbral else "bien"),
+        _tarjeta_indicador("📉", "Percentil 5 (Peor caso)", f"{np.percentile(dist,5)*100:.2f}%", "95% de confianza", "neutral"),
+        _tarjeta_indicador("📈", "Percentil 95 (Mejor caso)", f"{np.percentile(dist,95)*100:.2f}%", "Escenario optimista", "neutral"),
+    ]
+    grid_sim = _grid_tarjetas(tarjetas_sim, columnas=2)
 
-- Escenarios: {n:,} | Horizonte: {horizonte} días
-- μ diario: {mu:.6f} | σ diario: {sigma:.6f}
-- Retorno esperado: **{ret_e*100:.2f}%**
-- P5: {np.percentile(dist,5)*100:.2f}% | P95: {np.percentile(dist,95)*100:.2f}%
-"""
-    return {"decision": decision, "probabilidad_desfavorable": p_bad,
-            "retorno_esperado": ret_e, "distribucion": dist, "detalle": detalle,
-            "n_escenarios": n, "horizonte": horizonte}
+    decision_card = (
+        f'<div style="background:{bg_dec};border-left:5px solid {color_dec};border-radius:10px;'
+        f'padding:12px 14px;margin-bottom:10px;">'
+        f'<div style="font-size:15px;font-weight:800;color:{color_dec};">Decisión Monte Carlo: {decision.upper()}</div>'
+        f'<div style="font-size:12px;color:#334155;margin-top:2px;">{motivo}</div>'
+        f'</div>'
+    )
+
+    detalle = (
+        f'<div style="background:{COLORS["card"]};border:1px solid {COLORS["border"]};border-radius:12px;padding:16px;margin:10px 0;">'
+        f'<div style="font-size:15px;font-weight:700;color:#1E40AF;margin-bottom:10px;">🎲 Resultados de la Simulación ({n:,} escenarios a {horizonte} días)</div>'
+        f'{decision_card}'
+        f'{grid_sim}'
+        f'</div>'
+    )
+
+    return {
+        "decision": decision, "probabilidad_desfavorable": p_bad,
+        "retorno_esperado": ret_e, "distribucion": dist, "detalle": detalle,
+        "n_escenarios": n, "horizonte": horizonte
+    }
 
 def interpretar_grafico_montecarlo(sim, nombre_empresa="la empresa"):
     if not sim:
@@ -1329,7 +1351,7 @@ def simular_inv(precios, tickers, monto, p1, p2, p3, p4, p5, periodo, anio=None)
         fig, ax = plt.subplots(figsize=(6, 2.2))
         ax.text(0.5, 0.5, "Primero ejecuta el análisis de mercado.", ha="center", va="center", color=COLORS["muted"])
         ax.axis("off")
-        return "Primero ejecuta el análisis de mercado.", fig
+        return "<div style='padding:12px;color:#64748B;'>Primero ejecuta el análisis de mercado.</div>", fig
     try:
         etiqueta = _etiqueta_periodo(periodo, anio)
         pesos = np.array([float(x or 0) for x in (p1, p2, p3, p4, p5)[:len(tickers)]])
@@ -1344,15 +1366,66 @@ def simular_inv(precios, tickers, monto, p1, p2, p3, p4, p5, periodo, anio=None)
             vf = inv * (s.iloc[-1] / s.iloc[0])
             total += vf
             filas.append((nombre_de(t), w*100, inv, vf, (vf/inv - 1)*100))
-        md = f"### 💰 Resultado simulación de inversión — {etiqueta}\n\n"
-        md += "| Empresa | % | Invertido | Final | Resultado |\n| :--- | :---: | :---: | :---: |\n"
+
+        gt = (total/monto - 1)*100
+        c_gt = COLORS["green"] if gt >= 0 else COLORS["red"]
+
+        # Filas de la tabla HTML
+        filas_html = ""
         for n_, w, inv, vf, g in filas:
             c = COLORS["green"] if g >= 0 else COLORS["red"]
-            md += f"| {n_} | {w:.0f}% | ${inv:,.2f} | ${vf:,.2f} | <span style='color:{c}'>{g:+.2f}%</span> |\n"
-        gt = (total/monto - 1)*100
-        c = COLORS["green"] if gt >= 0 else COLORS["red"]
-        md += f"\n**Total:** ${monto:,.2f} → **${total:,.2f}**  |  Resultado global: <span style='color:{c}'>**{gt:+.2f}%**</span>\n\n"
-        md += interpretar_simulacion_inversion(filas, gt, monto, total, etiqueta)
+            flecha = "▲" if g >= 0 else "▼"
+            filas_html += f"""
+            <tr style="border-bottom: 1px solid #E2E8F0;">
+                <td style="padding: 8px 10px; font-weight: 600; color: #1E293B;">{n_}</td>
+                <td style="padding: 8px 10px; text-align: center; color: #475569;">{w:.0f}%</td>
+                <td style="padding: 8px 10px; text-align: right; color: #475569;">${inv:,.2f}</td>
+                <td style="padding: 8px 10px; text-align: right; color: #1E293B; font-weight: 600;">${vf:,.2f}</td>
+                <td style="padding: 8px 10px; text-align: right; font-weight: 700; color: {c};">{flecha} {g:+.2f}%</td>
+            </tr>
+            """
+
+        mejor = max(filas, key=lambda f: f[4])
+        peor = min(filas, key=lambda f: f[4])
+        ganancia_neta = total - monto
+        veredicto = "positivo" if gt >= 0 else "negativo"
+
+        # Contenedor completo estilo tarjeta
+        html = f"""
+        <div style="background: {COLORS['card']}; border: 1px solid {COLORS['border']}; border-radius: 14px; padding: 16px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(15,23,42,0.06);">
+            <div style="font-size: 15px; font-weight: 700; color: #1E40AF; margin-bottom: 12px;">
+                💰 Resultado simulación de inversión — {etiqueta}
+            </div>
+
+            <table style="width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 14px;">
+                <thead>
+                    <tr style="background: #2563EB; color: white;">
+                        <th style="padding: 8px 10px; text-align: left; border-top-left-radius: 8px;">Empresa</th>
+                        <th style="padding: 8px 10px; text-align: center;">%</th>
+                        <th style="padding: 8px 10px; text-align: right;">Invertido</th>
+                        <th style="padding: 8px 10px; text-align: right;">Final</th>
+                        <th style="padding: 8px 10px; text-align: right; border-top-right-radius: 8px;">Resultado</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {filas_html}
+                </tbody>
+            </table>
+
+            <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+                <span style="font-size: 13px; font-weight: 600; color: #334155;">Total: ${monto:,.2f} → <b>${total:,.2f}</b></span>
+                <span style="font-size: 14px; font-weight: 800; color: {c_gt};">Resultado global: {gt:+.2f}% (${ganancia_neta:+,.2f})</span>
+            </div>
+
+            <div style="background: #EFF6FF; border-left: 4px solid #2563EB; border-radius: 8px; padding: 12px 14px; font-size: 12px; color: #1E293B; line-height: 1.5;">
+                <p style="margin: 0 0 6px 0;"><b>¿Qué significa este resultado?</b> Si hubieras invertido <b>${monto:,.2f}</b> en el periodo <b>{etiqueta}</b>, hoy tendrías aproximadamente <b>${total:,.2f}</b> (resultado {veredicto}).</p>
+                <p style="margin: 0 0 6px 0;">• <b>Mayor aporte:</b> {mejor[0]} ({mejor[4]:+.2f}%)</p>
+                <p style="margin: 0 0 6px 0;">• <b>Menor aporte:</b> {peor[0]} ({peor[4]:+.2f}%)</p>
+                <p style="margin: 0; font-size: 11px; color: #64748B;">ℹ️ Simulación estadística basada en datos históricos pasados.</p>
+            </div>
+        </div>
+        """
+
         nombres = [f[0] for f in filas]
         resultados = [f[4] for f in filas]
         colores_barras = [COLORS["green"] if r >= 0 else COLORS["red"] for r in resultados]
@@ -1367,12 +1440,12 @@ def simular_inv(precios, tickers, monto, p1, p2, p3, p4, p5, periodo, anio=None)
                         ha="center", va="bottom" if r >= 0 else "top", fontsize=9, fontweight="bold")
         plt.xticks(rotation=15, ha="right")
         plt.tight_layout()
-        return md, fig
+        return html, fig
     except Exception as e:
         fig, ax = plt.subplots(figsize=(6, 2.2))
         ax.text(0.5, 0.5, f"Error: {e}", ha="center", va="center", color=COLORS["red"])
         ax.axis("off")
-        return f"Error: {e}", fig
+        return f"<div style='color:red;'>Error: {e}</div>", fig
 
 def cargar_estados(opcion):
     d = estados_yahoo(ticker_de(opcion))
@@ -1435,7 +1508,7 @@ def run_sim(pack, n, umbral):
         return sim["detalle"], sim, fig, interpretacion
     except Exception as e:
         fig, ax = plt.subplots(figsize=(5, 2)); ax.axis("off")
-        return f"Error: {e}", {}, fig, ""
+        return f"<div style='background:{COLORS['red_light']};color:#DC2626;padding:10px 12px;border-radius:10px;'>⚠️ Error: {e}</div>", {}, fig, ""
 
 def run_integ(diag, pack, sim):
     try:
@@ -2027,7 +2100,7 @@ with gr.Blocks(title="Robot Financiero Inteligente") as demo:
                 s5 = gr.Slider(0, 100, 0, label="% Emp 5")
             btn_inv = gr.Button("Simular inversión", variant="primary")
             with gr.Row():
-                md_inv = gr.Markdown(scale=3)
+                html_inv = gr.HTML(scale=3)
                 plot_inv = gr.Plot(scale=2)
 
         with gr.Tab("📋 Diagnóstico & Riesgos"):
@@ -2063,7 +2136,7 @@ with gr.Blocks(title="Robot Financiero Inteligente") as demo:
                 n_esc = gr.Number(2000, label="Escenarios")
                 umbral = gr.Slider(0.05, 0.50, 0.30, step=0.05, label="Umbral P(pérdida)")
                 btn_sim = gr.Button("Simular decisión", variant="primary")
-            md_sim = gr.Markdown()
+            html_sim = gr.HTML()
             plot_mc = gr.Plot()
             md_mc_interpretacion = gr.Markdown(label="¿Qué significa esta gráfica?")
             gr.Markdown("#### 🎯 Análisis Integrado + Interpretación + PDF")
@@ -2264,12 +2337,12 @@ with gr.Blocks(title="Robot Financiero Inteligente") as demo:
     btn_mkt.click(pipeline_mercado, [sel_emp, sel_periodo, sel_anio],
                   [plot_p, plot_r, md_mkt, html_interp_mkt, st_precios, st_tickers])
     btn_mkt.click(actualizar_ctx_mercado, [st_ctx, st_precios, st_tickers, sel_periodo, sel_anio], st_ctx)
-    btn_inv.click(simular_inv, [st_precios, st_tickers, monto, s1, s2, s3, s4, s5, sel_periodo, sel_anio], [md_inv, plot_inv])
+    btn_inv.click(simular_inv, [st_precios, st_tickers, monto, s1, s2, s3, s4, s5, sel_periodo, sel_anio], [html_inv, plot_inv])
 
     btn_load.click(cargar_estados, sel_d, [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, md_load, st_sector, st_nombre])
     btn_diag.click(run_diag, [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, st_nombre], [html_diag, st_diag])
     btn_risk.click(run_riesgo_completo, [st_precios, st_tickers, st_diag, st_sector, st_nombre], [html_risk, st_riesgo, plot_h, html_tablero])
-    btn_sim.click(run_sim, [st_riesgo, n_esc, umbral], [md_sim, st_sim, plot_mc, md_mc_interpretacion])
+    btn_sim.click(run_sim, [st_riesgo, n_esc, umbral], [html_sim, st_sim, plot_mc, md_mc_interpretacion])
 
     # Sincronización completa de datos para Asistente y Resumen Visual
     btn_int.click(run_integ, [st_diag, st_riesgo, st_sim], [md_int, st_integ, st_ctx])
