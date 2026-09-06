@@ -13,6 +13,7 @@ Robot Financiero Inteligente — Versión completa y corregida con:
 
 import warnings
 import sys
+import time as _time
 from datetime import date, timedelta
 import io
 import os
@@ -215,6 +216,40 @@ def _etiqueta_periodo(periodo, anio=None):
         return f"Año {anio}"
     return periodo
 
+# ------------------------------------------------------------
+# Resiliencia ante bloqueos/rate-limit de Yahoo Finance
+# (caché temporal + reintentos con espera, sin cambiar el
+#  comportamiento normal cuando Yahoo responde bien)
+# ------------------------------------------------------------
+
+_YF_TTL_CACHE = {}
+_YF_CACHE_TTL_SEG = 600  # 10 minutos
+
+def _yf_cache_get(clave):
+    entrada = _YF_TTL_CACHE.get(clave)
+    if not entrada:
+        return None
+    ts, valor = entrada
+    if _time.time() - ts > _YF_CACHE_TTL_SEG:
+        return None
+    return valor
+
+def _yf_cache_set(clave, valor):
+    _YF_TTL_CACHE[clave] = (_time.time(), valor)
+
+def _yf_con_reintentos(fn, intentos=3, espera_base=3):
+    ultimo_error = None
+    for intento in range(1, intentos + 1):
+        try:
+            return fn()
+        except Exception as e:
+            ultimo_error = e
+            print(f"[YahooFinance] Intento {intento}/{intentos} falló: {type(e).__name__}: {e}",
+                  file=sys.stderr, flush=True)
+            if intento < intentos:
+                _time.sleep(espera_base * intento)
+    raise ultimo_error
+
 def descargar_precios(opciones, periodo="1 año", anio=None):
     if not opciones:
         raise ValueError("Selecciona entre 1 y 5 empresas.")
@@ -229,18 +264,25 @@ def descargar_precios(opciones, periodo="1 año", anio=None):
         raise ValueError("Empresas repetidas.")
 
     usa_anio = anio and str(anio) not in ("", "Automático (usar periodo)")
+    clave_cache = ("precios", tuple(sorted(tickers)), periodo, str(anio) if usa_anio else None)
+    cacheado = _yf_cache_get(clave_cache)
+    if cacheado is not None:
+        return cacheado[[t for t in tickers if t in cacheado.columns]]
+
     if usa_anio:
         anio = int(anio)
         inicio = f"{anio}-01-01"
         hoy = date.today()
         fin = f"{anio}-12-31" if anio < hoy.year else hoy.strftime("%Y-%m-%d")
-        datos = yf.download(tickers, start=inicio, end=fin, interval="1d",
-                            progress=False, auto_adjust=True, threads=False)
+        datos = _yf_con_reintentos(lambda: yf.download(
+            tickers, start=inicio, end=fin, interval="1d",
+            progress=False, auto_adjust=True, threads=False))
     else:
         mapa = {"6 meses": "6mo", "1 año": "1y", "2 años": "2y", "5 años": "5y", "10 años": "10y"}
         period_yf = mapa.get(periodo, "1y")
-        datos = yf.download(tickers, period=period_yf, interval="1d",
-                            progress=False, auto_adjust=True, threads=False)
+        datos = _yf_con_reintentos(lambda: yf.download(
+            tickers, period=period_yf, interval="1d",
+            progress=False, auto_adjust=True, threads=False))
 
     if datos is None or datos.empty:
         msg_periodo = f"del año {anio}" if usa_anio else f"del periodo {periodo}"
@@ -255,7 +297,9 @@ def descargar_precios(opciones, periodo="1 año", anio=None):
     precios = precios.dropna(how="all").dropna(axis=1, how="all")
     if precios.empty:
         raise ValueError("Datos vacíos tras limpieza.")
-    return precios[[t for t in tickers if t in precios.columns]]
+    resultado = precios[[t for t in tickers if t in precios.columns]]
+    _yf_cache_set(clave_cache, resultado)
+    return resultado
 
 def _buscar(df, claves):
     if df is None or getattr(df, "empty", True):
@@ -284,17 +328,23 @@ def estados_yahoo(ticker):
     }
     if not ticker:
         return vacio
+
+    cacheado = _yf_cache_get(("estados", ticker))
+    if cacheado is not None:
+        return cacheado
+
     try:
-        t = yf.Ticker(ticker)
-        info = t.info or {}
-        bs, fin = t.balance_sheet, t.financials
+        def _fetch():
+            t = yf.Ticker(ticker)
+            return t, (t.info or {}), t.balance_sheet, t.financials
+        t, info, bs, fin = _yf_con_reintentos(_fetch)
         mc = info.get("marketCap")
         try:
             mc = float(mc) if mc else 0
         except Exception:
             mc = 0
         nombre = info.get("longName") or nombre_de(ticker)
-        return {
+        resultado = {
             "ticker": ticker, "nombre": nombre, "sector": info.get("sector", "N/D"),
             "activo_corriente": _buscar(bs, ["current assets", "total current assets"]) or 0,
             "pasivo_corriente": _buscar(bs, ["current liabilities", "total current liabilities"]) or 0,
@@ -309,6 +359,8 @@ def estados_yahoo(ticker):
             "valor_mercado_patrimonio": mc,
             "mensaje": f"✅ Datos de **{nombre}** cargados desde Yahoo Finance. Revisa y ajusta si es necesario.",
         }
+        _yf_cache_set(("estados", ticker), resultado)
+        return resultado
     except Exception as e:
         vacio["mensaje"] = f"⚠️ Error al cargar {ticker}: {e}. Usa modo manual."
         return vacio
@@ -514,7 +566,8 @@ def calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre_e
     )
 
     md = (
-        f'<div style="font-size:15px;font-weight:700;color:#1E40AF;margin-bottom:8px;">'
+        f'<div style="background:{COLORS["card"]};font-size:15px;font-weight:700;color:#1E40AF;'
+        f'margin-bottom:8px;padding:8px 12px;border-radius:10px;">'
         f'📊 Diagnóstico Financiero — {nombre_empresa}</div>\n'
         f'{grid_html}\n{z_card}'
     )
@@ -597,7 +650,8 @@ def texto_riesgos(m, riesgos, pred=None, nombre_empresa="Empresa"):
         _tarjeta_indicador("📉", "Máximo Drawdown", f"{m['max_drawdown']*100:.2f}%", "La peor caída desde un máximo histórico", nivel_dd),
     ]
     html = (
-        f'<div style="font-size:15px;font-weight:700;color:#1E40AF;margin-bottom:8px;">'
+        f'<div style="background:{COLORS["card"]};font-size:15px;font-weight:700;color:#1E40AF;'
+        f'margin-bottom:8px;padding:8px 12px;border-radius:10px;">'
         f'📈 Riesgo de Mercado — {nombre_empresa}</div>\n'
         f'{_grid_tarjetas(tarjetas_mercado, columnas=2)}\n'
     )
@@ -611,7 +665,8 @@ def texto_riesgos(m, riesgos, pred=None, nombre_empresa="Empresa"):
         niv, det = riesgos[k]
         tarjetas_riesgos.append(_tarjeta_indicador(em.get(niv, "⚪"), lab, niv.upper(), det, nivel_map.get(niv, "neutral")))
     html += (
-        f'<div style="font-size:15px;font-weight:700;color:#1E40AF;margin:14px 0 8px;">'
+        f'<div style="background:{COLORS["card"]};font-size:15px;font-weight:700;color:#1E40AF;'
+        f'margin:14px 0 8px;padding:8px 12px;border-radius:10px;">'
         f'🛡️ Los 6 Riesgos Empresariales — {nombre_empresa}</div>\n'
         f'{_grid_tarjetas(tarjetas_riesgos, columnas=3)}\n'
     )
@@ -1331,12 +1386,12 @@ def run_diag(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre):
         r = calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre or "Empresa")
         return r["texto_md"], r
     except Exception as e:
-        return f"<div style='color:#DC2626;'>⚠️ Error: {e}</div>", {}
+        return f"<div style='background:{COLORS['red_light']};color:#DC2626;padding:10px 12px;border-radius:10px;'>⚠️ Error: {e}</div>", {}
 
 def run_riesgo_completo(precios, tickers, diag, sector, nombre_empresa):
     try:
         if precios is None or not tickers:
-            return "<div style='color:#64748B;'>Ejecuta primero Mercado con la misma empresa.</div>", {}, None, ""
+            return f"<div style='background:{COLORS['card']};color:#64748B;padding:10px 12px;border-radius:10px;'>Ejecuta primero Mercado con la misma empresa.</div>", {}, None, ""
         ticker_analisis = tickers[0]
         m = metricas_mercado(precios[ticker_analisis], nombre_empresa or ticker_analisis)
         riesgos = seis_riesgos(m, (diag or {}).get("razones"), sector or "N/D")
@@ -1355,12 +1410,12 @@ def run_riesgo_completo(precios, tickers, diag, sector, nombre_empresa):
                        "operacional": "Operacional", "legal": "Legal", "reputacional": "Reputacional"}.items():
             niv, det = riesgos[k]
             icon, bg, border = em.get(niv, ("⚪", "#F1F5F9", "#94A3B8"))
-            cards += f'<div style="background:{bg};border-left:5px solid {border};padding:12px 14px;border-radius:10px;margin-bottom:8px;"><div style="font-weight:700;font-size:14px;">{icon} {lab} — {niv.upper()}</div><div style="font-size:12px;color:#475569;margin-top:3px;">{det}</div></div>'
-        tablero = f'<div style="background:white;border:1px solid #E2E8F0;border-radius:12px;padding:16px;"><div style="font-size:16px;font-weight:700;margin-bottom:12px;">🚦 Tablero de Alertas — {nombre_empresa}</div>{cards}</div>'
+            cards += f'<div style="background:{bg};border-left:5px solid {border};padding:12px 14px;border-radius:10px;margin-bottom:8px;"><div style="font-weight:700;font-size:14px;color:#1E293B;">{icon} {lab} — {niv.upper()}</div><div style="font-size:12px;color:#475569;margin-top:3px;">{det}</div></div>'
+        tablero = f'<div style="background:{COLORS["card"]};border:1px solid #E2E8F0;border-radius:12px;padding:16px;"><div style="font-size:16px;font-weight:700;color:#1E40AF;margin-bottom:12px;">🚦 Tablero de Alertas — {nombre_empresa}</div>{cards}</div>'
         return md, {"metricas": m, "riesgos": riesgos, "prediccion": pred, "fig_riesgo": fig1}, fig1, tablero
     except Exception as e:
         fig, ax = plt.subplots(figsize=(5, 2)); ax.axis("off")
-        return f"<div style='color:#DC2626;'>⚠️ Error: {e}</div>", {}, fig, ""
+        return f"<div style='background:{COLORS['red_light']};color:#DC2626;padding:10px 12px;border-radius:10px;'>⚠️ Error: {e}</div>", {}, fig, ""
 
 def run_sim(pack, n, umbral):
     try:
@@ -1697,10 +1752,10 @@ _CACHE_POLITICA = {}
 
 def cargar_datos_politica(ticker):
     try:
-        empresa = yf.Ticker(ticker)
-        income = empresa.income_stmt
-        balance = empresa.balance_sheet
-        cashflow = empresa.cashflow
+        def _fetch():
+            empresa = yf.Ticker(ticker)
+            return empresa.income_stmt, empresa.balance_sheet, empresa.cashflow
+        income, balance, cashflow = _yf_con_reintentos(_fetch)
 
         revenue = _buscar(income, ["total revenue", "operating revenue"]) or 0
         operating_income = _buscar(income, ["operating income"]) or 0
