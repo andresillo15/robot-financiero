@@ -7,3 +7,5 @@ numpy-financial
 reportlab
 google-genai
 google-generativeai
+networkx
+plotly
