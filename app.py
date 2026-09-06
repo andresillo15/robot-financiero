@@ -693,25 +693,47 @@ def simulacion_decision(mu, sigma, n=2000, umbral=0.30, horizonte=252):
     dist = np.prod(1 + shocks, axis=1) - 1
     p_bad = float(np.mean(dist < 0))
     ret_e = float(np.mean(dist))
+
     if p_bad > umbral:
         decision, motivo = "rechazar", f"P(pérdida)={p_bad*100:.1f}% > umbral {umbral*100:.0f}%"
+        color_dec, bg_dec = COLORS["red"], COLORS["red_light"]
     elif p_bad > umbral / 2:
         decision, motivo = "revisar", f"P(pérdida)={p_bad*100:.1f}% zona intermedia"
+        color_dec, bg_dec = COLORS["yellow"], COLORS["yellow_light"]
     else:
         decision = "aceptar" if ret_e > 0 else "revisar"
         motivo = f"P(pérdida)={p_bad*100:.1f}%, retorno esperado {ret_e*100:.1f}%"
-    detalle = f"""**Decisión de la simulación: {decision.upper()}**
+        color_dec, bg_dec = COLORS["green"], COLORS["green_light"]
 
-{motivo}
+    tarjetas_sim = [
+        _tarjeta_indicador("🎯", "Retorno Esperado", f"{ret_e*100:+.2f}%", "Promedio de escenarios", "bien" if ret_e >= 0 else "mal"),
+        _tarjeta_indicador("🛑", "P(Pérdida)", f"{p_bad*100:.1f}%", f"Umbral definido: {umbral*100:.0f}%", "mal" if p_bad > umbral else "bien"),
+        _tarjeta_indicador("📉", "Percentil 5 (Peor caso)", f"{np.percentile(dist,5)*100:.2f}%", "95% de confianza", "neutral"),
+        _tarjeta_indicador("📈", "Percentil 95 (Mejor caso)", f"{np.percentile(dist,95)*100:.2f}%", "Escenario optimista", "neutral"),
+    ]
+    grid_sim = _grid_tarjetas(tarjetas_sim, columnas=2)
 
-- Escenarios: {n:,} | Horizonte: {horizonte} días
-- μ diario: {mu:.6f} | σ diario: {sigma:.6f}
-- Retorno esperado: **{ret_e*100:.2f}%**
-- P5: {np.percentile(dist,5)*100:.2f}% | P95: {np.percentile(dist,95)*100:.2f}%
-"""
-    return {"decision": decision, "probabilidad_desfavorable": p_bad,
-            "retorno_esperado": ret_e, "distribucion": dist, "detalle": detalle,
-            "n_escenarios": n, "horizonte": horizonte}
+    decision_card = (
+        f'<div style="background:{bg_dec};border-left:5px solid {color_dec};border-radius:10px;'
+        f'padding:12px 14px;margin-bottom:10px;">'
+        f'<div style="font-size:15px;font-weight:800;color:{color_dec};">Decisión Monte Carlo: {decision.upper()}</div>'
+        f'<div style="font-size:12px;color:#334155;margin-top:2px;">{motivo}</div>'
+        f'</div>'
+    )
+
+    detalle = (
+        f'<div style="background:{COLORS["card"]};border:1px solid {COLORS["border"]};border-radius:12px;padding:16px;margin:10px 0;">'
+        f'<div style="font-size:15px;font-weight:700;color:#1E40AF;margin-bottom:10px;">🎲 Resultados de la Simulación ({n:,} escenarios a {horizonte} días)</div>'
+        f'{decision_card}'
+        f'{grid_sim}'
+        f'</div>'
+    )
+
+    return {
+        "decision": decision, "probabilidad_desfavorable": p_bad,
+        "retorno_esperado": ret_e, "distribucion": dist, "detalle": detalle,
+        "n_escenarios": n, "horizonte": horizonte
+    }
 
 def interpretar_grafico_montecarlo(sim, nombre_empresa="la empresa"):
     if not sim:
@@ -1435,7 +1457,7 @@ def run_sim(pack, n, umbral):
         return sim["detalle"], sim, fig, interpretacion
     except Exception as e:
         fig, ax = plt.subplots(figsize=(5, 2)); ax.axis("off")
-        return f"Error: {e}", {}, fig, ""
+        return f"<div style='background:{COLORS['red_light']};color:#DC2626;padding:10px 12px;border-radius:10px;'>⚠️ Error: {e}</div>", {}, fig, ""
 
 def run_integ(diag, pack, sim):
     try:
@@ -2063,7 +2085,7 @@ with gr.Blocks(title="Robot Financiero Inteligente") as demo:
                 n_esc = gr.Number(2000, label="Escenarios")
                 umbral = gr.Slider(0.05, 0.50, 0.30, step=0.05, label="Umbral P(pérdida)")
                 btn_sim = gr.Button("Simular decisión", variant="primary")
-            md_sim = gr.Markdown()
+            html_sim = gr.HTML()
             plot_mc = gr.Plot()
             md_mc_interpretacion = gr.Markdown(label="¿Qué significa esta gráfica?")
             gr.Markdown("#### 🎯 Análisis Integrado + Interpretación + PDF")
@@ -2269,7 +2291,7 @@ with gr.Blocks(title="Robot Financiero Inteligente") as demo:
     btn_load.click(cargar_estados, sel_d, [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, md_load, st_sector, st_nombre])
     btn_diag.click(run_diag, [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, st_nombre], [html_diag, st_diag])
     btn_risk.click(run_riesgo_completo, [st_precios, st_tickers, st_diag, st_sector, st_nombre], [html_risk, st_riesgo, plot_h, html_tablero])
-    btn_sim.click(run_sim, [st_riesgo, n_esc, umbral], [md_sim, st_sim, plot_mc, md_mc_interpretacion])
+    btn_sim.click(run_sim, [st_riesgo, n_esc, umbral], [html_sim, st_sim, plot_mc, md_mc_interpretacion])
 
     # Sincronización completa de datos para Asistente y Resumen Visual
     btn_int.click(run_integ, [st_diag, st_riesgo, st_sim], [md_int, st_integ, st_ctx])
