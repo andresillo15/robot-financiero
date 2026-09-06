@@ -1,404 +1,4 @@
-# -*- coding: utf-8 -*-
-"""app.py
-
-Robot Financiero Inteligente — Versión completa y corregida con:
-- Integración de Google Gemini (gemini-3.6-flash)
-- Diagnóstico financiero integral (Altman Z-Score, DuPont, liquidez y solvencia)
-- Análisis de mercado, 6 riesgos empresariales y simulación Monte Carlo
-- Calculadora financiera interactiva de 13 modelos con gráficos
-- Generación de reportes ejecutivos en PDF con ReportLab y portada institucional
-- Sincronización completa de st_ctx para el gráfico lateral y memoria del Asistente
-- Configuración de host 0.0.0.0 y puerto dinámico para Render
-"""
-
-import warnings
-from datetime import date, timedelta
-import io
-import os
-import tempfile
-import numpy as np
-import pandas as pd
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import gradio as gr
-import yfinance as yf
-import re as _re
-import unicodedata as _ud
-
-# Intentar importar Google GenAI
-try:
-    from google import genai
-    GENAI_AVAILABLE = True
-except ImportError:
-    GENAI_AVAILABLE = False
-
-# Intentar importar ReportLab para PDFs
-try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
-    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
-                                     TableStyle, PageBreak, HRFlowable, Image as RLImage)
-    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
-    from reportlab.graphics.shapes import Drawing, Rect, String, Line
-    REPORTLAB_OK = True
-except ImportError:
-    REPORTLAB_OK = False
-
-warnings.filterwarnings("ignore")
-
-COLORS = {
-    "bg": "#F8FAFC", "card": "#FFFFFF", "border": "#E2E8F0",
-    "text": "#0F172A", "muted": "#64748B",
-    "primary": "#2563EB", "primary_light": "#DBEAFE",
-    "green": "#059669", "green_light": "#D1FAE5",
-    "red": "#DC2626", "red_light": "#FEE2E2",
-    "yellow": "#D97706", "yellow_light": "#FEF3C7",
-    "header": "#1E40AF",
-}
-
-plt.rcParams.update({
-    "figure.facecolor": COLORS["bg"],
-    "axes.facecolor": COLORS["card"],
-    "savefig.facecolor": COLORS["bg"],
-    "text.color": COLORS["text"],
-    "axes.labelcolor": COLORS["text"],
-    "xtick.color": COLORS["muted"],
-    "ytick.color": COLORS["muted"],
-    "axes.edgecolor": COLORS["border"],
-    "grid.color": "#E2E8F0",
-    "font.size": 11,
-    "axes.titlesize": 13,
-    "axes.titleweight": "bold",
-})
-
-# ============================================================
-# ASISTENTE CONVERSACIONAL Y MOTOR GEMINI (gemini-3.6-flash)
-# ============================================================
-
-SYSTEM_PROMPT_ASISTENTE = """
-Eres FinanIA, el asistente conversacional experto del Robot Financiero Inteligente.
-Respondes siempre en español, de forma analítica, pedagógica, clara y profesional.
-Te especializas en finanzas corporativas, análisis cuantitativo de inversiones, gestión de riesgos e indicadores de salud financiera.
-Si el usuario te da datos de contexto sobre una empresa o cálculo, úsalos directamente para fundamentar tu explicación con cifras reales.
-Usa formato Markdown estructurado (negritas, viñetas o tablas) para hacer tus respuestas fáciles de leer.
-"""
-
-def _contexto_a_texto(contexto):
-    contexto = contexto or {}
-    partes = []
-    nombre = contexto.get("nombre")
-    if nombre:
-        partes.append(f"Empresa analizada: {nombre}.")
-    if contexto.get("clasificacion"):
-        partes.append(f"Clasificación integral: {contexto['clasificacion'].upper()}.")
-    if contexto.get("score") is not None:
-        partes.append(f"Score global de salud financiera: {contexto['score']:.1f}/100.")
-    razones = contexto.get("razones") or {}
-    if razones.get("razon_corriente") is not None:
-        partes.append(f"Razón corriente: {razones['razon_corriente']:.2f}.")
-    if razones.get("endeudamiento") is not None:
-        partes.append(f"Endeudamiento: {razones['endeudamiento']*100:.1f}%.")
-    if razones.get("roe") is not None:
-        partes.append(f"ROE: {razones['roe']*100:.1f}%.")
-    if razones.get("z") is not None:
-        partes.append(f"Z de Altman: {razones['z']:.2f} (Zona: {((contexto.get('z_info') or {}).get('zona', 'N/D'))}).")
-    if contexto.get("decision"):
-        partes.append(f"Decisión Monte Carlo: {contexto['decision'].upper()}.")
-    riesgos = contexto.get("riesgos") or {}
-    if riesgos:
-        altos = [k for k, v in riesgos.items() if v[0] == "alto"]
-        if altos:
-            partes.append(f"Riesgos en nivel ALTO: {', '.join(altos)}.")
-    return " ".join(partes) if partes else "Aún no hay datos financieros cargados por el usuario."
-
-def responder_con_llm(pregunta, contexto=None):
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return None
-
-    info_contexto = _contexto_a_texto(contexto)
-    prompt_usuario = f"""
-{SYSTEM_PROMPT_ASISTENTE}
-
-[CONTEXTO DE LA SESIÓN DEL USUARIO]
-{info_contexto}
-
-[PREGUNTA DEL USUARIO]
-{pregunta}
-"""
-
-    # Intento 1: SDK google-genai
-    try:
-        from google import genai
-        client = genai.Client(api_key=api_key)
-        res = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt_usuario,
-        )
-        if hasattr(res, "text") and res.text:
-            return res.text
-    except Exception:
-        pass
-
-    # Intento 2: SDK google-generativeai
-    try:
-        import google.generativeai as gai
-        gai.configure(api_key=api_key)
-        model = gai.GenerativeModel("gemini-3.6-flash")
-        res = model.generate_content(prompt_usuario)
-        if hasattr(res, "text") and res.text:
-            return res.text
-    except Exception:
-        pass
-
-    return None
-
-# ============================================================
-# CATÁLOGO DE EMPRESAS
-# ============================================================
-
-CATALOGO = {
-    "AAPL": "Apple Inc.", "MSFT": "Microsoft Corporation", "GOOGL": "Alphabet Inc. (Google)",
-    "AMZN": "Amazon.com Inc.", "META": "Meta Platforms Inc.", "NVDA": "NVIDIA Corporation",
-    "TSLA": "Tesla Inc.", "NFLX": "Netflix Inc.", "ADBE": "Adobe Inc.", "ORCL": "Oracle Corporation",
-    "CRM": "Salesforce Inc.", "INTC": "Intel Corporation", "AMD": "Advanced Micro Devices",
-    "KO": "The Coca-Cola Company", "PEP": "PepsiCo Inc.", "MCD": "McDonald's Corporation",
-    "SBUX": "Starbucks Corporation", "NKE": "Nike Inc.", "WMT": "Walmart Inc.",
-    "COST": "Costco Wholesale", "TGT": "Target Corporation", "HD": "The Home Depot",
-    "JPM": "JPMorgan Chase & Co.", "BAC": "Bank of America", "V": "Visa Inc.",
-    "MA": "Mastercard Inc.", "GS": "Goldman Sachs", "MS": "Morgan Stanley",
-    "JNJ": "Johnson & Johnson", "PFE": "Pfizer Inc.", "UNH": "UnitedHealth Group",
-    "ABBV": "AbbVie Inc.", "MRK": "Merck & Co.",
-    "XOM": "Exxon Mobil Corporation", "CVX": "Chevron Corporation",
-    "BA": "The Boeing Company", "CAT": "Caterpillar Inc.", "GE": "General Electric",
-    "DIS": "The Walt Disney Company", "PG": "Procter & Gamble",
-    "VZ": "Verizon Communications", "T": "AT&T Inc.", "IBM": "IBM Corporation",
-}
-
-OPCIONES = sorted([f"{n} ({t})" for t, n in CATALOGO.items()])
-OPCIONES_MANUAL = ["Manual / PYME (ingresar datos)"] + OPCIONES
-
-def ticker_de(opcion):
-    if not opcion or "Manual" in str(opcion) or "PYME" in str(opcion):
-        return ""
-    return str(opcion).split("(")[-1].replace(")", "").strip()
-
-def nombre_de(ticker):
-    return CATALOGO.get(ticker, ticker or "Empresa manual")
-
-def _etiqueta_periodo(periodo, anio=None):
-    if anio and str(anio) not in ("", "Automático (usar periodo)"):
-        return f"Año {anio}"
-    return periodo
-
-def descargar_precios(opciones, periodo="1 año", anio=None):
-    if not opciones:
-        raise ValueError("Selecciona entre 1 y 5 empresas.")
-    if isinstance(opciones, str):
-        opciones = [opciones]
-    tickers = [ticker_de(o) for o in opciones if ticker_de(o)]
-    if not tickers:
-        raise ValueError("No hay tickers válidos.")
-    if len(tickers) > 5:
-        raise ValueError("Máximo 5 empresas.")
-    if len(set(tickers)) != len(tickers):
-        raise ValueError("Empresas repetidas.")
-
-    usa_anio = anio and str(anio) not in ("", "Automático (usar periodo)")
-    if usa_anio:
-        anio = int(anio)
-        inicio = f"{anio}-01-01"
-        hoy = date.today()
-        fin = f"{anio}-12-31" if anio < hoy.year else hoy.strftime("%Y-%m-%d")
-        datos = yf.download(tickers, start=inicio, end=fin, interval="1d",
-                            progress=False, auto_adjust=True, threads=False)
-    else:
-        mapa = {"6 meses": "6mo", "1 año": "1y", "2 años": "2y", "5 años": "5y", "10 años": "10y"}
-        period_yf = mapa.get(periodo, "1y")
-        datos = yf.download(tickers, period=period_yf, interval="1d",
-                            progress=False, auto_adjust=True, threads=False)
-
-    if datos is None or datos.empty:
-        msg_periodo = f"del año {anio}" if usa_anio else f"del periodo {periodo}"
-        raise ValueError(f"Sin datos de Yahoo Finance {msg_periodo}. Prueba con otro año o periodo.")
-
-    if isinstance(datos.columns, pd.MultiIndex):
-        precios = datos["Close"].copy()
-    else:
-        precios = datos[["Close"]].copy()
-        precios.columns = tickers
-
-    precios = precios.dropna(how="all").dropna(axis=1, how="all")
-    if precios.empty:
-        raise ValueError("Datos vacíos tras limpieza.")
-    return precios[[t for t in tickers if t in precios.columns]]
-
-def _buscar(df, claves):
-    if df is None or getattr(df, "empty", True):
-        return None
-    idx = {str(i).lower(): i for i in df.index}
-    for c in claves:
-        for low, orig in idx.items():
-            if c in low:
-                val = df.loc[orig]
-                val = val.iloc[0] if hasattr(val, "iloc") else val
-                try:
-                    f = float(val)
-                    return f if pd.notna(f) else None
-                except Exception:
-                    pass
-    return None
-
-def estados_yahoo(ticker):
-    ticker = (ticker or "").upper().strip()
-    vacio = {
-        "ticker": ticker, "nombre": nombre_de(ticker) if ticker else "Manual",
-        "sector": "N/D", "activo_corriente": 0, "pasivo_corriente": 0, "inventarios": 0,
-        "activos_totales": 0, "pasivo_total": 0, "patrimonio": 0, "utilidades_retenidas": 0,
-        "utilidad_neta": 0, "ventas": 0, "utilidad_operativa": 0, "valor_mercado_patrimonio": 0,
-        "mensaje": "Completa los campos manualmente (modo PYME / Manual).",
-    }
-    if not ticker:
-        return vacio
-    try:
-        t = yf.Ticker(ticker)
-        info = t.info or {}
-        bs, fin = t.balance_sheet, t.financials
-        mc = info.get("marketCap")
-        try:
-            mc = float(mc) if mc else 0
-        except Exception:
-            mc = 0
-        nombre = info.get("longName") or nombre_de(ticker)
-        return {
-            "ticker": ticker, "nombre": nombre, "sector": info.get("sector", "N/D"),
-            "activo_corriente": _buscar(bs, ["current assets", "total current assets"]) or 0,
-            "pasivo_corriente": _buscar(bs, ["current liabilities", "total current liabilities"]) or 0,
-            "inventarios": _buscar(bs, ["inventory", "inventories"]) or 0,
-            "activos_totales": _buscar(bs, ["total assets"]) or 0,
-            "pasivo_total": _buscar(bs, ["total liabilities net minority interest", "total liabilities"]) or 0,
-            "patrimonio": _buscar(bs, ["stockholders equity", "total equity gross minority interest", "common stock equity"]) or 0,
-            "utilidades_retenidas": _buscar(bs, ["retained earnings"]) or 0,
-            "utilidad_neta": _buscar(fin, ["net income", "net income common stockholders"]) or 0,
-            "ventas": _buscar(fin, ["total revenue", "operating revenue"]) or 0,
-            "utilidad_operativa": _buscar(fin, ["ebit", "operating income"]) or 0,
-            "valor_mercado_patrimonio": mc,
-            "mensaje": f"✅ Datos de **{nombre}** cargados desde Yahoo Finance. Revisa y ajusta si es necesario.",
-        }
-    except Exception as e:
-        vacio["mensaje"] = f"⚠️ Error al cargar {ticker}: {e}. Usa modo manual."
-        return vacio
-
-# ============================================================
-# CALCULADORA
-# ============================================================
-
-def _pos(v, nom="Valor"):
-    v = float(v)
-    if v <= 0:
-        raise ValueError(f"{nom} debe ser > 0")
-    return v
-
-def _tasa(v):
-    v = float(v)
-    if v <= -1:
-        raise ValueError("Tasa inválida")
-    return v
-
-def fmt(v):
-    if v is None or (isinstance(v, float) and np.isnan(v)):
-        return "N/A"
-    return f"$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-def interes_simple(c, r, t):
-    c, r, t = _pos(c, "Capital"), _tasa(r), _pos(t, "Tiempo")
-    i = c * r * t
-    return i, c + i
-
-def interes_compuesto(c, r, n):
-    c, r, n = _pos(c, "Capital"), _tasa(r), _pos(n, "Periodos")
-    m = c * (1 + r) ** n
-    return m - c, m
-
-def valor_futuro(vp, r, n):
-    return _pos(vp, "VP") * (1 + _tasa(r)) ** _pos(n, "n")
-
-def valor_presente(vf, r, n):
-    return _pos(vf, "VF") / (1 + _tasa(r)) ** _pos(n, "n")
-
-def vp_anualidad(cuota, r, n, tipo="ordinaria"):
-    cuota, r, n = _pos(cuota, "Cuota"), _tasa(r), _pos(n, "n")
-    f = n if abs(r) < 1e-12 else (1 - (1 + r) ** (-n)) / r
-    if tipo == "anticipada":
-        f *= 1 + r
-    return cuota * f
-
-def vf_anualidad(cuota, r, n, tipo="ordinaria"):
-    cuota, r, n = _pos(cuota, "Cuota"), _tasa(r), _pos(n, "n")
-    f = n if abs(r) < 1e-12 else ((1 + r) ** n - 1) / r
-    if tipo == "anticipada":
-        f *= 1 + r
-    return cuota * f
-
-def tabla_amortizacion(c, r, n):
-    c, r, n = _pos(c, "Capital"), _tasa(r), int(_pos(n, "n"))
-    cuota = c / n if abs(r) < 1e-12 else c * (r * (1 + r) ** n) / ((1 + r) ** n - 1)
-    saldo, filas = c, []
-    for i in range(1, n + 1):
-        inte = saldo * r
-        amort = cuota - inte
-        saldo = max(0.0, saldo - amort)
-        filas.append({"Periodo": i, "Cuota": cuota, "Interés": inte, "Amortización": amort, "Saldo": saldo})
-    return pd.DataFrame(filas), cuota
-
-def conversion_tasas(tasa, m_or, m_des, tipo="nominal"):
-    tasa, m_or, m_des = _tasa(tasa), int(_pos(m_or)), int(_pos(m_des))
-    ef = (1 + tasa / m_or) ** m_or - 1 if tipo == "nominal" else tasa
-    nom = m_des * ((1 + ef) ** (1 / m_des) - 1)
-    efd = (1 + nom / m_des) ** m_des - 1
-    return ef, nom, efd
-
-def calcular_tir(flujos):
-    f = np.array(flujos, dtype=float)
-    if len(f) < 2:
-        raise ValueError("Mínimo 2 flujos")
-    tir = 0.1
-    for _ in range(80):
-        npv = sum(x / (1 + tir) ** t for t, x in enumerate(f))
-        d = sum(-t * x / (1 + tir) ** (t + 1) for t, x in enumerate(f))
-        if abs(d) < 1e-14:
-            break
-        n = tir - npv / d
-        if abs(n - tir) < 1e-10:
-            tir = n
-            break
-        tir = n
-    return float(tir)
-
-def calcular_van(flujos, tasa):
-    return float(sum(x / (1 + _tasa(tasa)) ** t for t, x in enumerate(flujos)))
-
-def calcular_capm(rf, beta, rm):
-    return _tasa(rf) + float(beta) * (_tasa(rm) - _tasa(rf))
-
-def calcular_wacc(ke, kd, e, d, tax):
-    ke, kd = _tasa(ke), _tasa(kd)
-    e, d = _pos(e, "E"), max(0.0, float(d))
-    tax = max(0.0, min(1.0, float(tax)))
-    v = e + d
-    if v == 0:
-        raise ValueError("E + D = 0")
-    return (e / v) * ke + (d / v) * kd * (1 - tax)
-
-def calcular_eva(nopat, wacc, capital):
-    return float(nopat) - _tasa(wacc) * _pos(capital, "Capital")
-
-# ============================================================
-# DIAGNÓSTICO
-# ============================================================
+ =====================================
 
 _NIVEL_COLORES = {
     "bien": (COLORS["green_light"], COLORS["green"]),
@@ -700,7 +300,7 @@ def analisis_integrado(diag, pack_riesgo):
         clasif, color, msg = "precaucion", COLORS["yellow"], "Diagnóstico en **PRECAUCIÓN**. Señales mixtas."
     else:
         clasif, color, msg = "alerta", COLORS["red"], "Diagnóstico en **ALERTA**. Vulnerabilidades materiales."
-    
+
     val_z = f"{z:.2f}" if isinstance(z, (int, float)) else "N/D"
     val_zona = z_info.get('zona', 'N/D')
     val_rc = f"{rc:.2f}" if isinstance(rc, (int, float)) else "N/D"
@@ -1408,11 +1008,269 @@ def actualizar_ctx_calculadora(ctx, tipo, texto_resultado):
         ctx["ultimo_calculo"] = f"{tipo}: {resumen[:200]}"
     return ctx
 
+def interpretar_simulacion_inversion(filas, gt, monto, total, etiqueta):
+    if not filas:
+        return ""
+    mejor = max(filas, key=lambda f: f[4])
+    peor = min(filas, key=lambda f: f[4])
+    ganancia_neta = total - monto
+    veredicto = "positivo" if gt >= 0 else "negativo"
+    return (
+        f"**¿Qué significa este resultado?** Si hubieras invertido **${monto:,.2f}** en el periodo **{etiqueta}** "
+        f"repartidos según los porcentajes elegidos, hoy tendrías aproximadamente **${total:,.2f}**, "
+        f"es decir, un resultado {veredicto} de **{gt:+.2f}%** (${ganancia_neta:,.2f}).\n\n"
+        f"La empresa que más aportó al resultado fue **{mejor[0]}** ({mejor[4]:+.2f}%), "
+        f"mientras que la que menos aportó fue **{peor[0]}** ({peor[4]:+.2f}%).\n\n"
+        f"ℹ️ Esta es una simulación histórica basada en precios pasados. Los resultados pasados no garantizan resultados futuros."
+    )
+
+# ============================================================
+# CONSTANTES DE INTERFAZ (CSS, AÑOS, DEFINICIONES, CHAT)
+# ============================================================
+
+CSS = """
+.gradio-container { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
+.gr-button-primary { font-weight: 600; }
+"""
+
+OPCIONES_ANIO = ["Automático (usar periodo)"] + [str(y) for y in range(date.today().year, 1999, -1)]
+
+DEFINICIONES_CALC = {
+    "Interés Simple": "**Interés Simple**: I = C × r × t. El interés se calcula siempre sobre el capital inicial, sin capitalizarse en el tiempo.",
+    "Interés Compuesto": "**Interés Compuesto**: M = C × (1+r)ⁿ. Los intereses generados en cada periodo se reinvierten y también generan intereses.",
+    "Valor Futuro": "**Valor Futuro (VF)**: VF = VP × (1+r)ⁿ. Indica cuánto valdrá hoy un capital dentro de *n* periodos a una tasa *r*.",
+    "Valor Presente": "**Valor Presente (VP)**: VP = VF / (1+r)ⁿ. Indica cuánto vale hoy un monto que se recibirá en el futuro.",
+    "Anualidad VP": "**Valor Presente de una Anualidad**: trae a valor presente una serie de cuotas iguales y periódicas.",
+    "Anualidad VF": "**Valor Futuro de una Anualidad**: lleva a valor futuro una serie de cuotas iguales y periódicas.",
+    "Amortización": "**Tabla de Amortización**: distribuye una deuda en cuotas iguales, separando interés y abono a capital en cada periodo.",
+    "Conversión de tasas": "**Conversión de tasas**: convierte una tasa nominal o efectiva entre distintas frecuencias de capitalización.",
+    "TIR": "**Tasa Interna de Retorno (TIR)**: tasa de descuento que hace que el VAN de un proyecto sea igual a cero.",
+    "VAN": "**Valor Actual Neto (VAN)**: suma de los flujos de caja futuros descontados a una tasa, menos la inversión inicial.",
+    "CAPM": "**CAPM**: Re = Rf + β×(Rm − Rf). Estima el retorno esperado de un activo según su riesgo sistemático (beta).",
+    "WACC": "**WACC**: Costo Promedio Ponderado de Capital; combina el costo del equity y de la deuda según su peso en la estructura de capital.",
+    "EVA": "**EVA (Valor Económico Agregado)**: EVA = NOPAT − (WACC × Capital invertido). Mide si la empresa genera valor por encima de su costo de capital.",
+}
+
+MENSAJE_BIENVENIDA = (
+    "¡Hola! Soy **FinanIA**, tu asistente del Robot Financiero Inteligente. "
+    "Puedo ayudarte a interpretar el diagnóstico financiero, los 6 riesgos, la simulación Monte Carlo y tus cálculos. "
+    "Prueba preguntas como *'Analiza mi empresa'*, *'¿Puedo invertir?'* o *'Dame un resumen'*."
+)
+
+def _quitar_acentos(s):
+    return "".join(c for c in _ud.normalize("NFD", s) if _ud.category(c) != "Mn")
+
+def _respuesta_regla(pregunta, ctx, tema_anterior=None):
+    ctx = ctx or {}
+    q = _quitar_acentos(pregunta.lower())
+    nombre = ctx.get("nombre") or "tu empresa"
+
+    if "mas" in q or "cuentame" in q or "explica" in q:
+        expansiones = {
+            "analisis": lambda: interpretacion_narrativa(
+                nombre, {"razones": ctx.get("razones") or {}, "z_info": ctx.get("z_info")},
+                {"metricas": ctx.get("metricas"), "riesgos": ctx.get("riesgos")},
+                ctx.get("sim"), ctx.get("integ") or {}),
+            "invertir": lambda: (ctx.get("sim") or {}).get("detalle") or "Aún no hay una simulación Monte Carlo calculada.",
+            "resumen": lambda: _contexto_a_texto(ctx),
+            "mercado": lambda: "Puedes ver el detalle completo en la pestaña 'Mercado & Inversión', con el gráfico de desempeño y la volatilidad de cada empresa.",
+        }
+        if tema_anterior and tema_anterior in expansiones:
+            return expansiones[tema_anterior](), tema_anterior
+        return "Cuéntame primero qué te gustaría analizar: el diagnóstico, los riesgos, si conviene invertir, o un resumen general.", None
+
+    if "resumen" in q or "resume" in q:
+        return _contexto_a_texto(ctx), "resumen"
+
+    if "invertir" in q or "inversion" in q:
+        decision = ctx.get("decision")
+        sim = ctx.get("sim") or {}
+        if decision:
+            mapa = {
+                "aceptar": f"Según la simulación Monte Carlo, la balanza se inclina hacia escenarios de ganancia para **{nombre}**, con una probabilidad de pérdida de {sim.get('probabilidad_desfavorable',0)*100:.0f}%. Aun así, esto es un análisis estadístico, no asesoría financiera personalizada.",
+                "revisar": f"Los resultados para **{nombre}** están repartidos casi por igual entre ganar y perder ({sim.get('probabilidad_desfavorable',0)*100:.0f}% de probabilidad de pérdida). Te recomendaría evaluar tu tolerancia al riesgo antes de decidir.",
+                "rechazar": f"La simulación indica que una parte importante de los escenarios para **{nombre}** terminan en pérdida ({sim.get('probabilidad_desfavorable',0)*100:.0f}%), por lo que convendría ser cauteloso.",
+            }
+            return mapa.get(decision, "Aún no tengo suficiente información."), "invertir"
+        return "Para responder eso necesito que primero completes Diagnóstico, Riesgos y la Simulación Monte Carlo en la pestaña correspondiente.", "invertir"
+
+    if "analiz" in q or "diagnostic" in q:
+        razones = ctx.get("razones") or {}
+        if razones:
+            return interpretacion_narrativa(
+                nombre, {"razones": razones, "z_info": ctx.get("z_info")},
+                {"metricas": ctx.get("metricas"), "riesgos": ctx.get("riesgos")},
+                ctx.get("sim"), ctx.get("integ") or {}), "analisis"
+        return "Todavía no has calculado el Diagnóstico de ninguna empresa. Ve a 'Diagnóstico & Riesgos', carga una empresa y presiona 'Calcular Diagnóstico'.", "analisis"
+
+    if "compar" in q or ("mercado" in q and "empresa" in q):
+        mc = ctx.get("mercado_comparado")
+        if mc:
+            return f"En el periodo **{mc['periodo']}** comparaste: " + "; ".join(mc["empresas"]) + ".", "mercado"
+        return "Aún no has comparado empresas. Ve a la pestaña 'Mercado & Inversión'.", "mercado"
+
+    if "calcul" in q or "ultimo" in q:
+        uc = ctx.get("ultimo_calculo")
+        if uc:
+            return f"Tu último cálculo en la calculadora fue: {uc}", "calculo"
+        return "Aún no has usado la calculadora financiera.", "calculo"
+
+    return (
+        "Puedo ayudarte a interpretar el Diagnóstico Financiero, los 6 Riesgos, la Simulación Monte Carlo y tus cálculos. "
+        "Prueba preguntas como: *'Analiza mi empresa'*, *'¿Puedo invertir?'*, *'Dame un resumen'* o *'Cuéntame más'*."
+    ), None
+
+def _generar_respuesta(pregunta, ctx, tema_anterior=None):
+    llm = responder_con_llm(pregunta, ctx)
+    if llm:
+        return llm, tema_anterior
+    return _respuesta_regla(pregunta, ctx, tema_anterior)
+
+def chat_ui(historial, mensaje, ctx, tema):
+    historial = list(historial or [])
+    mensaje = (mensaje or "").strip()
+    if not mensaje:
+        return historial, "", tema
+    respuesta, nuevo_tema = _generar_respuesta(mensaje, ctx, tema)
+    historial.append({"role": "user", "content": mensaje})
+    historial.append({"role": "assistant", "content": respuesta})
+    return historial, "", nuevo_tema
+
+def iniciar_chat():
+    return [{"role": "assistant", "content": MENSAJE_BIENVENIDA}], None
+
+def sugerencia_rapida(pregunta, historial, ctx, tema):
+    return chat_ui(historial, pregunta, ctx, tema)
+
+def _fig_barra(etiquetas, valores, titulo):
+    fig, ax = plt.subplots(figsize=(6, 3.4))
+    colores_barras = [COLORS["primary"] if v >= 0 else COLORS["red"] for v in valores]
+    barras = ax.bar([str(e) for e in etiquetas], valores, color=colores_barras, alpha=0.9, edgecolor="white")
+    for b, v in zip(barras, valores):
+        ax.annotate(f"{v:,.2f}", (b.get_x() + b.get_width() / 2, b.get_height()),
+                    ha="center", va="bottom" if v >= 0 else "top", fontsize=8, fontweight="bold")
+    ax.set_title(titulo, fontweight="bold")
+    ax.grid(True, alpha=0.3, axis="y")
+    plt.xticks(rotation=10, ha="right")
+    plt.tight_layout()
+    return fig
+
+def _calc_tab(tipo, a, b, c, d, e, ctx):
+    try:
+        if tipo == "Interés Simple":
+            capital, tasa, tiempo = a, b, c
+            interes, monto_final = interes_simple(capital, tasa, tiempo)
+            md = f"### 💰 Interés Simple\n\n- Interés generado: **{fmt(interes)}**\n- Monto final: **{fmt(monto_final)}**"
+            fig = _fig_barra(["Capital", "Interés", "Monto Final"], [capital, interes, monto_final], "Interés Simple")
+
+        elif tipo == "Interés Compuesto":
+            capital, tasa, periodos = a, b, _pos(c, "Periodos")
+            interes, monto_final = interes_compuesto(capital, tasa, periodos)
+            md = f"### 📈 Interés Compuesto\n\n- Interés generado: **{fmt(interes)}**\n- Monto final: **{fmt(monto_final)}**"
+            n_int = max(1, int(periodos))
+            xs = list(range(0, n_int + 1))
+            ys = [capital * (1 + tasa) ** x for x in xs]
+            fig, ax = plt.subplots(figsize=(6, 3.4))
+            ax.plot(xs, ys, marker="o", color=COLORS["primary"], lw=2)
+            ax.set_title("Crecimiento del capital", fontweight="bold")
+            ax.set_xlabel("Periodo"); ax.set_ylabel("Monto")
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+
+        elif tipo == "Valor Futuro":
+            vp, tasa, periodos = a, b, c
+            vf = valor_futuro(vp, tasa, periodos)
+            md = f"### ⏩ Valor Futuro\n\n- VF = **{fmt(vf)}**"
+            fig = _fig_barra(["VP", "VF"], [vp, vf], "Valor Presente vs Futuro")
+
+        elif tipo == "Valor Presente":
+            vf_, tasa, periodos = a, b, c
+            vp = valor_presente(vf_, tasa, periodos)
+            md = f"### ⏪ Valor Presente\n\n- VP = **{fmt(vp)}**"
+            fig = _fig_barra(["VP", "VF"], [vp, vf_], "Valor Presente vs Futuro")
+
+        elif tipo == "Anualidad VP":
+            cuota, tasa, periodos, tipo_an = a, b, c, (d or "ordinaria")
+            vp = vp_anualidad(cuota, tasa, periodos, tipo_an)
+            md = f"### 📅 Anualidad — Valor Presente\n\n- VP = **{fmt(vp)}**\n- Tipo: {tipo_an}"
+            fig = _fig_barra(["Cuota", "VP total"], [cuota, vp], "Anualidad VP")
+
+        elif tipo == "Anualidad VF":
+            cuota, tasa, periodos, tipo_an = a, b, c, (d or "ordinaria")
+            vf = vf_anualidad(cuota, tasa, periodos, tipo_an)
+            md = f"### 📅 Anualidad — Valor Futuro\n\n- VF = **{fmt(vf)}**\n- Tipo: {tipo_an}"
+            fig = _fig_barra(["Cuota", "VF total"], [cuota, vf], "Anualidad VF")
+
+        elif tipo == "Amortización":
+            capital, tasa, periodos = a, b, c
+            df, cuota = tabla_amortizacion(capital, tasa, periodos)
+            total_interes = df["Interés"].sum()
+            md = (f"### 🏦 Tabla de Amortización\n\n- Cuota fija: **{fmt(cuota)}**\n"
+                  f"- Total de interés pagado: **{fmt(total_interes)}**\n"
+                  f"- Total pagado: **{fmt(cuota * len(df))}**")
+            fig, ax = plt.subplots(figsize=(6, 3.4))
+            ax.plot(df["Periodo"], df["Saldo"], color=COLORS["primary"], lw=2, label="Saldo")
+            ax.bar(df["Periodo"], df["Interés"], color=COLORS["red"], alpha=0.5, label="Interés")
+            ax.bar(df["Periodo"], df["Amortización"], bottom=df["Interés"], color=COLORS["green"], alpha=0.5, label="Amortización")
+            ax.set_title("Amortización del préstamo", fontweight="bold")
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+
+        elif tipo == "Conversión de tasas":
+            tasa, freq_or, freq_des, tipo_tasa = a, b, c, (d or "nominal")
+            ef, nom, efd = conversion_tasas(tasa, freq_or, freq_des, tipo_tasa)
+            md = (f"### 🔄 Conversión de tasas\n\n- Tasa efectiva anual: **{ef*100:.4f}%**\n"
+                  f"- Tasa nominal en la nueva frecuencia: **{nom*100:.4f}%**\n"
+                  f"- Tasa efectiva verificada: **{efd*100:.4f}%**")
+            fig = _fig_barra(["Ingresada", "Efectiva Anual", "Nominal Destino"], [tasa*100, ef*100, nom*100], "Comparación de tasas (%)")
+
+        elif tipo == "TIR":
+            flujos = [float(x.strip()) for x in str(d).split(",") if x.strip() != ""]
+            tir = calcular_tir(flujos)
+            md = f"### 📐 TIR\n\n- TIR calculada: **{tir*100:.2f}%**"
+            fig = _fig_barra([f"F{i}" for i in range(len(flujos))], flujos, "Flujos de caja")
+
+        elif tipo == "VAN":
+            tasa = b
+            flujos = [float(x.strip()) for x in str(d).split(",") if x.strip() != ""]
+            van = calcular_van(flujos, tasa)
+            md = f"### 📐 VAN\n\n- VAN a tasa {tasa*100:.2f}%: **{fmt(van)}**"
+            fig = _fig_barra([f"F{i}" for i in range(len(flujos))], flujos, "Flujos de caja")
+
+        elif tipo == "CAPM":
+            rf, beta, rm = a, b, c
+            capm = calcular_capm(rf, beta, rm)
+            md = f"### 📉 CAPM\n\n- Retorno esperado: **{capm*100:.2f}%**"
+            fig = _fig_barra(["Rf", "Retorno esperado", "Rm"], [rf*100, capm*100, rm*100], "CAPM (%)")
+
+        elif tipo == "WACC":
+            ke, kd, e_, d_, tax = a, b, c, d, e
+            wacc = calcular_wacc(ke, kd, e_, d_, tax)
+            md = f"### 🏗️ WACC\n\n- WACC = **{wacc*100:.2f}%**"
+            fig = _fig_barra(["Equity", "Deuda"], [e_, d_], "Estructura de capital")
+
+        elif tipo == "EVA":
+            nopat, wacc_v, capital = a, b, c
+            eva = calcular_eva(nopat, wacc_v, capital)
+            md = f"### 💎 EVA\n\n- EVA = **{fmt(eva)}**"
+            fig = _fig_barra(["NOPAT", "Costo de capital", "EVA"], [nopat, wacc_v * capital, eva], "EVA")
+
+        else:
+            return "Tipo de cálculo no reconocido.", None, ctx
+
+        ctx = actualizar_ctx_calculadora(ctx, tipo, md)
+        return md, fig, ctx
+    except Exception as ex:
+        fig, ax = plt.subplots(figsize=(5, 2)); ax.axis("off")
+        ax.text(0.5, 0.5, f"Error: {ex}", ha="center", va="center", color=COLORS["red"])
+        return f"⚠️ Error: {ex}", fig, ctx
+
 # ============================================================
 # INTERFAZ GRADIO COMPLETA (UI)
 # ============================================================
 
-with gr.Blocks(title="Robot Financiero Inteligente", css=CSS, theme=gr.themes.Soft(primary_hue="blue", secondary_hue="emerald")) as demo:
+with gr.Blocks(title="Robot Financiero Inteligente") as demo:
 
     gr.HTML("""
     <div style="background:linear-gradient(135deg,#1E40AF,#2563EB);padding:20px 24px;border-radius:14px;margin-bottom:18px;">
@@ -1684,7 +1542,7 @@ with gr.Blocks(title="Robot Financiero Inteligente", css=CSS, theme=gr.themes.So
     btn_diag.click(run_diag, [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, st_nombre], [html_diag, st_diag])
     btn_risk.click(run_riesgo_completo, [st_precios, st_tickers, st_diag, st_sector, st_nombre], [html_risk, st_riesgo, plot_h, html_tablero])
     btn_sim.click(run_sim, [st_riesgo, n_esc, umbral], [md_sim, st_sim, plot_mc, md_mc_interpretacion])
-    
+
     # Sincronización completa de datos para Asistente y Resumen Visual
     btn_int.click(run_integ, [st_diag, st_riesgo, st_sim], [md_int, st_integ, st_ctx])
     btn_int.click(grafico_resumen_asistente, st_ctx, plot_chat_resumen)
@@ -1714,4 +1572,5 @@ with gr.Blocks(title="Robot Financiero Inteligente", css=CSS, theme=gr.themes.So
     demo.load(grafico_resumen_asistente, st_ctx, plot_chat_resumen)
 
 port = int(os.environ.get("PORT", 7860))
-demo.launch(server_name="0.0.0.0", server_port=port)
+demo.launch(server_name="0.0.0.0", server_port=port, css=CSS,
+            theme=gr.themes.Soft(primary_hue="blue", secondary_hue="emerald"))
