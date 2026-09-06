@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """app.py
 
-Robot Financiero Inteligente — Versión completa con todas las funciones originales:
-- Módulo 1: Mercado, comparación de empresas, rendimiento histórico y simulador de inversión
-- Módulo 2: Diagnóstico financiero (Z de Altman, DuPont, liquidez), tablero de alertas de 6 riesgos, predicción a 30 días y simulación Monte Carlo
-- Módulo 3: Generación de informe PDF ejecutivo con ReportLab, gráficos y portada institucional
-- Módulo 4: Calculadora financiera interactiva de 13 modelos con gráficos
-- Módulo 5: Asistente inteligente FinanIA potenciado por Google Gemini (gemini-3.6-flash) y motor de reglas
+Robot Financiero Inteligente — Versión completa y corregida con:
+- Integración dual y fluida de Google Gemini (gemini-3.6-flash)
+- Diagnóstico financiero integral (Altman Z-Score, DuPont, liquidez y solvencia)
+- Análisis de mercado, 6 riesgos empresariales y simulación Monte Carlo
+- Calculadora financiera interactiva (interés, amortización, TIR, VAN, WACC, EVA)
+- Generación de reportes ejecutivos en PDF con ReportLab y portada institucional
+- Sincronización completa de st_ctx para el gráfico lateral y memoria del Asistente
+- Configuración de host y puerto dinámico para despliegue en Render
 """
 
 import warnings
@@ -23,7 +25,6 @@ import gradio as gr
 import yfinance as yf
 import re as _re
 import unicodedata as _ud
-import threading
 
 # Intentar importar Google GenAI
 try:
@@ -32,22 +33,19 @@ try:
 except ImportError:
     GENAI_AVAILABLE = False
 
+# Intentar importar ReportLab para PDFs
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
     from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
-                                     TableStyle, PageBreak, HRFlowable, Image as RLImage, KeepTogether)
-    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
-    from reportlab.graphics.shapes import Drawing, Rect, String, Line, Polygon
-    from reportlab.graphics.charts.lineplots import LinePlot
-    from reportlab.graphics.widgets.markers import makeMarker
+                                     TableStyle, PageBreak, HRFlowable, Image as RLImage)
+    from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+    from reportlab.graphics.shapes import Drawing, Rect, String, Line
     REPORTLAB_OK = True
-    print("✅ reportlab cargado correctamente")
 except ImportError:
     REPORTLAB_OK = False
-    print("⚠️ reportlab no está disponible. El botón de descarga de PDF quedará desactivado.")
 
 warnings.filterwarnings("ignore")
 
@@ -76,17 +74,15 @@ plt.rcParams.update({
     "axes.titleweight": "bold",
 })
 
-print("✅ BLOQUE 1 listo")
-
 # ============================================================
-# MOTOR DE IA GENERATIVA DEL ASISTENTE (GOOGLE GEMINI 3.6 FLASH)
+# ASISTENTE CONVERSACIONAL Y MOTOR GEMINI (gemini-3.6-flash)
 # ============================================================
 
 SYSTEM_PROMPT_ASISTENTE = """
 Eres FinanIA, el asistente conversacional experto del Robot Financiero Inteligente.
 Respondes siempre en español, de forma analítica, pedagógica, clara y profesional.
 Te especializas en finanzas corporativas, análisis cuantitativo de inversiones, gestión de riesgos e indicadores de salud financiera.
-Si el usuario te da datos de contexto sobre una empresa o cálculo, úsalos para justificar tu explicación.
+Si el usuario te da datos de contexto sobre una empresa o cálculo, úsalos directamente para fundamentar tu explicación con cifras reales.
 Usa formato Markdown estructurado (negritas, viñetas o tablas) para hacer tus respuestas fáciles de leer.
 """
 
@@ -97,9 +93,9 @@ def _contexto_a_texto(contexto):
     if nombre:
         partes.append(f"Empresa analizada: {nombre}.")
     if contexto.get("clasificacion"):
-        partes.append(f"Clasificación general: {contexto['clasificacion']}.")
+        partes.append(f"Clasificación integral: {contexto['clasificacion'].upper()}.")
     if contexto.get("score") is not None:
-        partes.append(f"Score global: {contexto['score']:.1f}/100.")
+        partes.append(f"Score global de salud financiera: {contexto['score']:.1f}/100.")
     razones = contexto.get("razones") or {}
     if razones.get("razon_corriente") is not None:
         partes.append(f"Razón corriente: {razones['razon_corriente']:.2f}.")
@@ -107,13 +103,15 @@ def _contexto_a_texto(contexto):
         partes.append(f"Endeudamiento: {razones['endeudamiento']*100:.1f}%.")
     if razones.get("roe") is not None:
         partes.append(f"ROE: {razones['roe']*100:.1f}%.")
+    if razones.get("z") is not None:
+        partes.append(f"Z de Altman: {razones['z']:.2f} (Zona: {((contexto.get('z_info') or {}).get('zona', 'N/D'))}).")
     if contexto.get("decision"):
-        partes.append(f"Simulación Monte Carlo: {contexto['decision']}.")
+        partes.append(f"Decisión Monte Carlo: {contexto['decision'].upper()}.")
     riesgos = contexto.get("riesgos") or {}
     if riesgos:
         altos = [k for k, v in riesgos.items() if v[0] == "alto"]
         if altos:
-            partes.append(f"Riesgos en nivel alto: {', '.join(altos)}.")
+            partes.append(f"Riesgos en nivel ALTO: {', '.join(altos)}.")
     return " ".join(partes) if partes else "Aún no hay datos financieros cargados por el usuario."
 
 def responder_con_llm(pregunta, contexto=None):
@@ -125,7 +123,7 @@ def responder_con_llm(pregunta, contexto=None):
     prompt_usuario = f"""
 {SYSTEM_PROMPT_ASISTENTE}
 
-[CONTEXTO DE LA SESIÓN]
+[CONTEXTO DE LA SESIÓN DEL USUARIO]
 {info_contexto}
 
 [PREGUNTA DEL USUARIO]
@@ -158,7 +156,9 @@ def responder_con_llm(pregunta, contexto=None):
 
     return None
 
-print("✅ Módulo de IA generativa listo con Gemini")
+# ============================================================
+# CATÁLOGO DE EMPRESAS
+# ============================================================
 
 CATALOGO = {
     "AAPL": "Apple Inc.", "MSFT": "Microsoft Corporation", "GOOGL": "Alphabet Inc. (Google)",
@@ -188,8 +188,6 @@ def ticker_de(opcion):
 
 def nombre_de(ticker):
     return CATALOGO.get(ticker, ticker or "Empresa manual")
-
-print(f"✅ BLOQUE 2 — {len(CATALOGO)} empresas")
 
 def _etiqueta_periodo(periodo, anio=None):
     if anio and str(anio) not in ("", "Automático (usar periodo)"):
@@ -294,9 +292,10 @@ def estados_yahoo(ticker):
         vacio["mensaje"] = f"⚠️ Error al cargar {ticker}: {e}. Usa modo manual."
         return vacio
 
-print("✅ BLOQUE 3 listo")
+# ============================================================
+# CALCULADORA
+# ============================================================
 
-# BLOQUE 4 — Calculadora
 def _pos(v, nom="Valor"):
     v = float(v)
     if v <= 0:
@@ -397,9 +396,10 @@ def calcular_wacc(ke, kd, e, d, tax):
 def calcular_eva(nopat, wacc, capital):
     return float(nopat) - _tasa(wacc) * _pos(capital, "Capital")
 
-print("✅ BLOQUE 4 listo")
+# ============================================================
+# DIAGNÓSTICO
+# ============================================================
 
-# BLOQUE 5 — Diagnóstico
 _NIVEL_COLORES = {
     "bien": (COLORS["green_light"], COLORS["green"]),
     "atencion": (COLORS["yellow_light"], COLORS["yellow"]),
@@ -504,9 +504,10 @@ def calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre_e
     }
     return {"razones": razones, "z_info": z_info, "texto_md": md, "nombre": nombre_empresa}
 
-print("✅ BLOQUE 5 listo")
+# ============================================================
+# RIESGOS Y MONTE CARLO
+# ============================================================
 
-# BLOQUE 6 — Riesgos y Monte Carlo
 def metricas_mercado(serie, nombre="Activo"):
     s = serie.dropna()
     if len(s) < 10:
@@ -671,9 +672,185 @@ def interpretar_grafico_montecarlo(sim, nombre_empresa="la empresa"):
     partes.append(f"En resumen, para **{nombre_empresa}**, {veredicto}, por lo que la simulación sugiere **{decision.upper()}**.")
     return "\n\n".join(partes)
 
-print("✅ BLOQUE 6 listo")
+# ============================================================
+# ANÁLISIS INTEGRADO (CORREGIDO)
+# ============================================================
 
-# BLOQUE 7 — PDF con ReportLab
+def analisis_integrado(diag, pack_riesgo):
+    razones = (diag or {}).get("razones") or {}
+    z_info = (diag or {}).get("z_info") or {}
+    m = (pack_riesgo or {}).get("metricas") or {}
+    riesgos = (pack_riesgo or {}).get("riesgos") or {}
+    nombre = (diag or {}).get("nombre") or m.get("nombre") or "Empresa"
+    score = 50.0
+    z, rc, end, roe, vol = razones.get("z"), razones.get("razon_corriente"), razones.get("endeudamiento"), razones.get("roe"), m.get("volatilidad_anual")
+    if z is not None: score += 20 if z > 2.99 else (5 if z >= 1.81 else -25)
+    if rc is not None: score += 10 if rc >= 1.5 else (-15 if rc < 1 else 0)
+    if end is not None: score += -15 if end > 0.7 else (-5 if end > 0.45 else 5)
+    if roe is not None: score += 10 if roe >= 0.12 else (-10 if roe < 0.05 else 3)
+    if vol is not None: score += -15 if vol > 0.45 else (-5 if vol > 0.25 else 5)
+    if riesgos:
+        mapa = {"bajo": 20, "medio": 50, "alto": 80}
+        avg = np.mean([mapa.get(v[0], 50) for v in riesgos.values()])
+        score += (50 - avg) / 5
+    score = float(np.clip(score, 0, 100))
+    if score >= 70:
+        clasif, color, msg = "saludable", COLORS["green"], "Diagnóstico **SALUDABLE**. Solidez y riesgo controlado."
+    elif score >= 45:
+        clasif, color, msg = "precaucion", COLORS["yellow"], "Diagnóstico en **PRECAUCIÓN**. Señales mixtas."
+    else:
+        clasif, color, msg = "alerta", COLORS["red"], "Diagnóstico en **ALERTA**. Vulnerabilidades materiales."
+    
+    val_z = f"{z:.2f}" if isinstance(z, (int, float)) else "N/D"
+    val_zona = z_info.get('zona', 'N/D')
+    val_rc = f"{rc:.2f}" if isinstance(rc, (int, float)) else "N/D"
+    val_roe = f"{roe*100:.2f}%" if isinstance(roe, (int, float)) else "N/D"
+    val_end = f"{end*100:.2f}%" if isinstance(end, (int, float)) else "N/D"
+    val_vol = f"{vol*100:.2f}%" if isinstance(vol, (int, float)) else "N/D"
+
+    md = f"""## 🎯 Análisis Integrado — **{nombre}** <span style="color:{color}">● {clasif.upper()}</span>
+
+{msg}
+
+**Score global: {score:.1f} / 100**
+
+| Clave | Valor |
+| :--- | :---: |
+| Z Altman | {val_z} |
+| Zona Z | {val_zona} |
+| Razón corriente | {val_rc} |
+| ROE | {val_roe} |
+| Endeudamiento | {val_end} |
+| Volatilidad | {val_vol} |
+"""
+    return {"clasificacion": clasif, "score": score, "texto_md": md, "z_info": z_info, "nombre": nombre, "razones": razones}
+
+def interpretacion_narrativa(nombre_empresa, diag, pack, sim, integ):
+    razones = (diag or {}).get("razones") or {}
+    z_info = (diag or {}).get("z_info") or {}
+    m = (pack or {}).get("metricas") or {}
+    riesgos = (pack or {}).get("riesgos") or {}
+    frases = []
+
+    rc = razones.get("razon_corriente")
+    if rc is not None:
+        if rc >= 1.5:
+            frases.append(f"Por cada $1 que la empresa debe pagar pronto, tiene ${rc:.2f} disponibles para cubrirlo, así que tiene un buen colchón para pagar sus deudas de corto plazo sin apuros.")
+        elif rc >= 1:
+            frases.append(f"Por cada $1 que debe pagar pronto, tiene ${rc:.2f} disponibles: alcanza, pero justo, por lo que conviene vigilar de cerca las fechas de pago.")
+        else:
+            frases.append(f"Por cada $1 que debe pagar pronto, solo tiene ${rc:.2f} disponibles: es decir, no le alcanzaría con lo que tiene a la mano para cubrir sus deudas más inmediatas, lo cual es una señal de alerta.")
+
+    end = razones.get("endeudamiento")
+    if end is not None:
+        if end > 0.7:
+            frases.append(f"De cada $100 en bienes y recursos que tiene la empresa, ${end*100:.0f} fueron financiados con préstamos o deudas — es un nivel alto.")
+        elif end > 0.45:
+            frases.append(f"De cada $100 en bienes y recursos, ${end*100:.0f} vienen de deuda: es un nivel moderado.")
+        else:
+            frases.append(f"De cada $100 en bienes y recursos, solo ${end*100:.0f} vienen de deuda: la empresa depende poco de préstamos.")
+
+    roe = razones.get("roe")
+    if roe is not None:
+        if roe >= 0.12:
+            frases.append(f"Por cada $100 que los dueños tienen invertidos, están ganando ${roe*100:.1f} al año: es una rentabilidad atractiva.")
+        elif roe >= 0:
+            frases.append(f"Por cada $100 invertidos por los dueños, la empresa les está devolviendo ${roe*100:.1f} al año: una ganancia modesta.")
+        else:
+            frases.append(f"Por cada $100 invertidos por los dueños, la empresa está perdiendo ${abs(roe)*100:.1f}.")
+
+    if z_info:
+        explicacion_zona = {
+            "Zona Segura": "el riesgo de que la empresa quiebre en el corto/mediano plazo es bajo",
+            "Zona Gris": "la empresa no está en peligro inmediato, pero tampoco está del todo firme",
+            "Zona de Riesgo": "el modelo detecta señales similares a las de empresas que han tenido problemas serios",
+        }.get(z_info.get("zona"), "")
+        frases.append(f"El modelo Z de Altman la ubica en **{z_info.get('zona','N/D')}**; {explicacion_zona}.")
+
+    vol = m.get("volatilidad_anual")
+    if vol is not None:
+        if vol > 0.45:
+            frases.append(f"El precio de la acción sube y baja mucho ({vol*100:.1f}% de variación anual).")
+        elif vol > 0.25:
+            frases.append(f"El precio de la acción tiene movimientos moderados ({vol*100:.1f}% de variación anual).")
+        elif vol:
+            frases.append(f"El precio de la acción se mueve poco ({vol*100:.1f}% de variación anual).")
+
+    if riesgos:
+        labels = {"mercado": "de mercado", "credito": "de crédito", "liquidez": "de liquidez",
+                  "operacional": "operacional", "legal": "legal/regulatorio", "reputacional": "reputacional"}
+        altos = [labels.get(k, k) for k, v in riesgos.items() if v[0] == "alto"]
+        if altos:
+            frases.append(f"De los 6 riesgos, los que están en nivel más alto son: {', '.join(altos)}.")
+        else:
+            frases.append("Ninguno de los 6 riesgos está en nivel alto en este momento.")
+
+    if sim:
+        decision_txt = {
+            "aceptar": "los números favorecen considerar la inversión",
+            "revisar": "los resultados están parejos entre ganar y perder",
+            "rechazar": "los números no favorecen invertir en este momento",
+        }.get(sim.get("decision"), "")
+        frases.append(f"La simulación Monte Carlo indica que {sim.get('probabilidad_desfavorable',0)*100:.0f} de cada 100 escenarios terminaron en pérdida, con retorno esperado de {sim.get('retorno_esperado',0)*100:+.1f}%. En otras palabras, {decision_txt}.")
+
+    if integ:
+        clasif_txt = {
+            "saludable": "está en buen estado general",
+            "precaucion": "muestra señales mixtas",
+            "alerta": "tiene vulnerabilidades importantes",
+        }.get(integ.get("clasificacion"), "")
+        frases.append(f"Poniendo todo junto, {nombre_empresa} obtiene un puntaje de **{integ.get('score',0):.0f} sobre 100**, lo que significa que {clasif_txt}.")
+
+    if not frases:
+        return "No hay suficiente información para generar una interpretación. Completa Diagnóstico, Riesgos y Simulación."
+    return " ".join(frases)
+
+def grafico_resumen_asistente(ctx):
+    ctx = ctx or {}
+    score = ctx.get("score")
+    riesgos = ctx.get("riesgos") or {}
+    nombre = ctx.get("nombre") or "tu empresa"
+
+    if score is None:
+        fig, ax = plt.subplots(figsize=(4.6, 4.2))
+        ax.axis("off")
+        ax.text(0.5, 0.6, "📊", ha="center", va="center", fontsize=40)
+        ax.text(0.5, 0.3, "Completa Diagnóstico → Riesgos → Análisis Integrado\npara ver aquí el resumen visual de tu empresa.",
+                ha="center", va="center", fontsize=9.5, color=COLORS["muted"], wrap=True)
+        plt.tight_layout()
+        return fig
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(4.6, 5.6), gridspec_kw={"height_ratios": [1, 1.3]})
+    color_score = COLORS["green"] if score >= 70 else COLORS["yellow"] if score >= 45 else COLORS["red"]
+    ax1.pie([score, 100 - score], colors=[color_score, "#E2E8F0"], startangle=90, counterclock=False,
+            wedgeprops={"width": 0.35, "edgecolor": "white"})
+    ax1.text(0, 0, f"{score:.0f}\n/100", ha="center", va="center", fontsize=16, fontweight="bold")
+    ax1.set_title(f"Score integrado — {nombre}", fontweight="bold", fontsize=11)
+
+    if riesgos:
+        labels = {"mercado": "Mercado", "credito": "Crédito", "liquidez": "Liquidez",
+                  "operacional": "Operacional", "legal": "Legal", "reputacional": "Reputacional"}
+        mapa_val = {"bajo": 1, "medio": 2, "alto": 3}
+        mapa_col = {"bajo": COLORS["green"], "medio": COLORS["yellow"], "alto": COLORS["red"]}
+        claves = list(labels.keys())
+        vals = [mapa_val.get(riesgos.get(k, ("bajo",))[0], 1) for k in claves]
+        cols = [mapa_col.get(riesgos.get(k, ("bajo",))[0], COLORS["muted"]) for k in claves]
+        ax2.barh([labels[k] for k in claves], vals, color=cols)
+        ax2.set_xlim(0, 3)
+        ax2.set_xticks([1, 2, 3])
+        ax2.set_xticklabels(["Bajo", "Medio", "Alto"])
+        ax2.set_title("Semáforo de los 6 riesgos", fontweight="bold", fontsize=11)
+        ax2.grid(True, alpha=0.3, axis="x")
+    else:
+        ax2.axis("off")
+        ax2.text(0.5, 0.5, "Sin datos de riesgo aún", ha="center", va="center", color=COLORS["muted"])
+    plt.tight_layout()
+    return fig
+
+# ============================================================
+# REPORTES EN PDF (REPORTLAB)
+# ============================================================
+
 UNIVERSIDAD_PROYECTO = "Universidad de Nariño"
 INTEGRANTES_PROYECTO = [
     "Claudia Jackeline Perafán Sánchez",
@@ -816,7 +993,6 @@ def generar_pdf(nombre_empresa, diag, pack, sim, integ, pred=None):
     story = []
     nombre_seguro = _esc(nombre_empresa)
 
-    # PORTADA
     story.append(_crear_logo_financiero())
     story.append(Spacer(1, 0.35*cm))
     story.append(Paragraph(_esc(UNIVERSIDAD_PROYECTO).upper(), uni_style))
@@ -843,7 +1019,7 @@ def generar_pdf(nombre_empresa, diag, pack, sim, integ, pred=None):
     story.append(Paragraph("Informe generado automáticamente · Uso educativo · No constituye consejo de inversión.", small))
     story.append(PageBreak())
 
-    # 1. DIAGNÓSTICO
+    # 1. Diagnóstico
     story.append(Paragraph(f"1. Diagnóstico Financiero — {nombre_seguro}", h2_style))
     if diag and diag.get("texto_md"):
         txt = _limpiar_para_pdf(diag["texto_md"])
@@ -880,7 +1056,7 @@ def generar_pdf(nombre_empresa, diag, pack, sim, integ, pred=None):
                 f"Las barras del semáforo muestran el nivel de cada uno de los 6 riesgos empresariales (bajo = verde, medio = amarillo, alto = rojo).",
                 analisis_style))
 
-    # 2. RIESGOS
+    # 2. Riesgos
     story.append(Paragraph("2. Análisis de Riesgos", h2_style))
     if pack and pack.get("riesgos"):
         data = [["Riesgo", "Nivel", "Detalle"]]
@@ -918,7 +1094,7 @@ def generar_pdf(nombre_empresa, diag, pack, sim, integ, pred=None):
 
     story.append(PageBreak())
 
-    # 3. SIMULACIÓN
+    # 3. Simulación
     story.append(Paragraph("3. Simulación Monte Carlo y Asesoramiento", h2_style))
     if sim and sim.get("detalle"):
         for line in _limpiar_para_pdf(sim["detalle"]).split("\n"):
@@ -943,7 +1119,7 @@ def generar_pdf(nombre_empresa, diag, pack, sim, integ, pred=None):
                 f"La línea roja vertical marca el punto de equilibrio (0%). La decisión automática fue: <b>{sim.get('decision','N/D').upper()}</b>.",
                 analisis_style))
 
-    # 4. INTERPRETACIÓN
+    # 4. Interpretación
     story.append(Paragraph("4. Interpretación integral de resultados", h2_style))
     narrativa = _limpiar_para_pdf(interpretacion_narrativa(nombre_empresa, diag, pack, sim, integ))
     for parrafo in narrativa.split(". "):
@@ -990,847 +1166,9 @@ def crear_reporte_pdf(nombre, diag, pack, sim, ctx):
         print("Error PDF:", e)
         return None, f"⚠️ Error al generar el PDF: {e}"
 
-print("✅ BLOQUE 7 listo (PDF mejorado)")
-
-# BLOQUE 8 — Mercado y comparador
-def interpretar_tabla_cotizacion(tickers, ret, vol, dd, etiqueta):
-    if not tickers:
-        return ""
-    mejor = max(tickers, key=lambda t: ret.get(t, -999))
-    peor = min(tickers, key=lambda t: ret.get(t, 999))
-    ganadoras = [t for t in tickers if ret.get(t, 0) >= 0]
-    perdedoras = [t for t in tickers if ret.get(t, 0) < 0]
-    vol_media = np.mean([vol.get(t, 0) for t in tickers]) * 100
-
-    color_fondo = "#ECFDF5" if len(ganadoras) >= len(perdedoras) else "#FEF3C7" if len(ganadoras) > 0 else "#FEE2E2"
-    color_borde = "#059669" if len(ganadoras) >= len(perdedoras) else "#D97706" if len(ganadoras) > 0 else "#DC2626"
-
-    html = f'''
-    <div style="background:{color_fondo};border:2px solid {color_borde};border-radius:14px;padding:14px 16px;
-                box-shadow:0 2px 8px rgba(15,23,42,0.08);height:100%;">
-      <div style="font-size:14px;font-weight:700;color:#1E40AF;margin-bottom:8px;">
-        🧠 Interpretación del resumen de cotización
-      </div>
-      <div style="font-size:12.5px;color:#334155;line-height:1.55;">
-        <p style="margin:0 0 6px 0;">En el periodo <b>{etiqueta}</b> se compararon <b>{len(tickers)}</b> empresas.</p>
-        <p style="margin:0 0 6px 0;">• <b>Mejor desempeño:</b> {nombre_de(mejor)} ({ret.get(mejor,0):+.2f}%)</p>
-        <p style="margin:0 0 6px 0;">• <b>Peor desempeño:</b> {nombre_de(peor)} ({ret.get(peor,0):+.2f}%)</p>
-        <p style="margin:0 0 6px 0;">• {len(ganadoras)} cerraron en positivo y {len(perdedoras)} en negativo.</p>
-        <p style="margin:0 0 6px 0;">• Volatilidad media del grupo: <b>{vol_media:.1f}%</b> anualizada.</p>
-        <p style="margin:0;font-size:11px;color:#64748B;">
-          ℹ️ Esta lectura se basa en datos históricos. No es una recomendación de inversión.
-        </p>
-      </div>
-    </div>
-    '''
-    return html
-
-def pipeline_mercado(opciones, periodo, anio=None):
-    try:
-        precios = descargar_precios(opciones, periodo, anio)
-        etiqueta = _etiqueta_periodo(periodo, anio)
-        tickers = list(precios.columns)
-        base = precios.apply(lambda s: s.dropna().iloc[0])
-        p100 = (precios / base) * 100
-        rets = precios.pct_change().dropna(how="all")
-        vol = rets.std() * np.sqrt(252)
-        ret = (precios.iloc[-1] / base - 1) * 100
-        dd = (precios / precios.cummax() - 1).min() * 100
-
-        fig1, ax1 = plt.subplots(figsize=(9, 4.2))
-        colores = [COLORS["primary"], COLORS["green"], COLORS["yellow"], COLORS["red"], "#7C3AED"]
-        for i, c in enumerate(tickers):
-            ax1.plot(p100.index, p100[c], lw=2.2, color=colores[i%5], label=nombre_de(c))
-        ax1.axhline(100, color=COLORS["muted"], ls="--", lw=1)
-        ax1.set_title(f"Performance Base 100 — {etiqueta}", fontweight="bold")
-        ax1.legend(frameon=True, fancybox=True, fontsize=9)
-        ax1.grid(True, alpha=0.4)
-        plt.tight_layout()
-
-        fig2, ax2 = plt.subplots(figsize=(9, 3.3))
-        for i, c in enumerate(tickers):
-            ax2.plot(rets.index, rets[c]*100, lw=0.9, alpha=0.85, color=colores[i%5], label=nombre_de(c))
-        ax2.axhline(0, color=COLORS["muted"], ls="--")
-        ax2.set_title("Variación diaria (%)", fontweight="bold")
-        ax2.legend(frameon=True, fancybox=True, fontsize=8)
-        ax2.grid(True, alpha=0.4)
-        plt.tight_layout()
-
-        md = "### Resumen tipo cotización\n\n| Símbolo | Empresa | Retorno | Volatilidad | Drawdown |\n| :---: | :--- | :---: | :---: | :---: |\n"
-        for c in tickers:
-            flecha = "▲" if ret[c] >= 0 else "▼"
-            color = COLORS["green"] if ret[c] >= 0 else COLORS["red"]
-            md += f"| **{c}** | {nombre_de(c)} | <span style='color:{color}'>{flecha} {ret[c]:+.2f}%</span> | {vol[c]*100:.2f}% | {dd[c]:.2f}% |\n"
-        md += f"\n> Periodo analizado: **{etiqueta}**"
-
-        interp_html = interpretar_tabla_cotizacion(tickers, ret, vol, dd, etiqueta)
-        return fig1, fig2, md, interp_html, precios, tickers
-    except Exception as e:
-        fig, ax = plt.subplots(figsize=(6, 2))
-        ax.text(0.5, 0.5, f"Error: {e}", ha="center", va="center", color=COLORS["red"])
-        ax.axis("off")
-        return fig, fig, f"### Error\n{e}", "", None, []
-
-print("✅ BLOQUE 8 listo")
-
-# BLOQUE 9 — Simulación de Inversión y Pipelines
-def interpretar_simulacion_inversion(filas, gt, monto, total, periodo):
-    if not filas:
-        return ""
-    ordenadas = sorted(filas, key=lambda x: x[4], reverse=True)
-    mejor = ordenadas[0]
-    peor = ordenadas[-1]
-    ganadoras = [f for f in filas if f[4] >= 0]
-    perdedoras = [f for f in filas if f[4] < 0]
-    n = len(filas)
-    rendimientos = np.array([f[4] for f in filas])
-    dispersion = float(rendimientos.max() - rendimientos.min()) if n > 1 else 0.0
-    partes = [f"### 🧠 Interpretación de la simulación — {periodo}\n"]
-    if gt >= 15:
-        veredicto = "**resultado sobresaliente**: el portafolio simulado habría generado una ganancia significativa"
-    elif gt >= 0:
-        veredicto = "**resultado positivo**: el portafolio simulado habría preservado y aumentado el capital"
-    elif gt >= -15:
-        veredicto = "**resultado negativo moderado**: el portafolio simulado habría perdido valor"
-    else:
-        veredicto = "**resultado negativo fuerte**: la caída habría sido considerable"
-    partes.append(f"En el periodo analizado ({periodo}), este portafolio muestra un {veredicto} ({gt:+.2f}% sobre ${monto:,.2f} invertidos).")
-    if n > 1:
-        partes.append(f"- **Mejor desempeño:** {mejor[0]} ({mejor[4]:+.2f}%).")
-        partes.append(f"- **Peor desempeño:** {peor[0]} ({peor[4]:+.2f}%).")
-        if dispersion > 40:
-            partes.append(f"- La dispersión entre activos es **alta** ({dispersion:.1f} puntos porcentuales de diferencia).")
-        else:
-            partes.append(f"- La dispersión entre activos es **moderada/baja** ({dispersion:.1f} pp).")
-        if len(ganadoras) == n:
-            partes.append("- Todas las posiciones cerraron en positivo.")
-        elif len(perdedoras) == n:
-            partes.append("- Todas las posiciones cerraron en negativo.")
-        else:
-            partes.append(f"- {len(ganadoras)} de {n} activos cerraron en positivo y {len(perdedoras)} en negativo.")
-    else:
-        partes.append("- Al tratarse de un solo activo, todo el resultado depende de su comportamiento individual.")
-    partes.append("\n> ℹ️ Esta interpretación se basa en datos históricos y **no constituye una recomendación de inversión**.")
-    return "\n".join(partes)
-
-def simular_inv(precios, tickers, monto, p1, p2, p3, p4, p5, periodo, anio=None):
-    if precios is None or not tickers:
-        fig, ax = plt.subplots(figsize=(6, 2.2))
-        ax.text(0.5, 0.5, "Primero ejecuta el análisis de mercado.", ha="center", va="center", color=COLORS["muted"])
-        ax.axis("off")
-        return "Primero ejecuta el análisis de mercado.", fig
-    try:
-        etiqueta = _etiqueta_periodo(periodo, anio)
-        pesos = np.array([float(x or 0) for x in (p1, p2, p3, p4, p5)[:len(tickers)]])
-        if pesos.sum() <= 0:
-            raise ValueError("Asigna porcentajes > 0")
-        pesos = pesos / pesos.sum()
-        monto = float(monto)
-        filas, total = [], 0.0
-        for t, w in zip(tickers, pesos):
-            s = precios[t].dropna()
-            inv = monto * w
-            vf = inv * (s.iloc[-1] / s.iloc[0])
-            total += vf
-            filas.append((nombre_de(t), w*100, inv, vf, (vf/inv - 1)*100))
-        md = f"### 💰 Resultado simulación de inversión — {etiqueta}\n\n"
-        md += "| Empresa | % | Invertido | Final | Resultado |\n| :--- | :---: | :---: | :---: | :---: |\n"
-        for n_, w, inv, vf, g in filas:
-            c = COLORS["green"] if g >= 0 else COLORS["red"]
-            md += f"| {n_} | {w:.0f}% | ${inv:,.2f} | ${vf:,.2f} | <span style='color:{c}'>{g:+.2f}%</span> |\n"
-        gt = (total/monto - 1)*100
-        c = COLORS["green"] if gt >= 0 else COLORS["red"]
-        md += f"\n**Total:** ${monto:,.2f} → **${total:,.2f}**  |  Resultado global: <span style='color:{c}'>**{gt:+.2f}%**</span>\n\n"
-        md += interpretar_simulacion_inversion(filas, gt, monto, total, etiqueta)
-        nombres = [f[0] for f in filas]
-        resultados = [f[4] for f in filas]
-        colores_barras = [COLORS["green"] if r >= 0 else COLORS["red"] for r in resultados]
-        fig, ax = plt.subplots(figsize=(7.5, 3.4))
-        barras = ax.bar(nombres, resultados, color=colores_barras, alpha=0.9, edgecolor="white")
-        ax.axhline(0, color=COLORS["muted"], lw=1)
-        ax.set_title(f"Resultado por empresa — {etiqueta}", fontweight="bold")
-        ax.set_ylabel("% de resultado")
-        ax.grid(True, alpha=0.3, axis="y")
-        for b, r in zip(barras, resultados):
-            ax.annotate(f"{r:+.1f}%", (b.get_x() + b.get_width()/2, b.get_height()),
-                        ha="center", va="bottom" if r >= 0 else "top", fontsize=9, fontweight="bold")
-        plt.xticks(rotation=15, ha="right")
-        plt.tight_layout()
-        return md, fig
-    except Exception as e:
-        fig, ax = plt.subplots(figsize=(6, 2.2))
-        ax.text(0.5, 0.5, f"Error: {e}", ha="center", va="center", color=COLORS["red"])
-        ax.axis("off")
-        return f"Error: {e}", fig
-
-def cargar_estados(opcion):
-    d = estados_yahoo(ticker_de(opcion))
-    return (d["activo_corriente"], d["pasivo_corriente"], d["inventarios"], d["utilidad_neta"],
-            d["ventas"], d["activos_totales"], d["patrimonio"], d["pasivo_total"],
-            d["utilidades_retenidas"], d["utilidad_operativa"], d["valor_mercado_patrimonio"],
-            d["mensaje"], d["sector"], d["nombre"])
-
-def run_diag(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre):
-    try:
-        r = calcular_diagnostico(ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, nombre or "Empresa")
-        return r["texto_md"], r
-    except Exception as e:
-        return f"<div style='color:#DC2626;'>⚠️ Error: {e}</div>", {}
-
-def run_riesgo_completo(precios, tickers, diag, sector, nombre_empresa):
-    try:
-        if precios is None or not tickers:
-            return "<div style='color:#64748B;'>Ejecuta primero Mercado con la misma empresa.</div>", {}, None, ""
-        ticker_analisis = tickers[0]
-        m = metricas_mercado(precios[ticker_analisis], nombre_empresa or ticker_analisis)
-        riesgos = seis_riesgos(m, (diag or {}).get("razones"), sector or "N/D")
-        pred = prediccion_simple(m["serie"])
-        md = texto_riesgos(m, riesgos, pred, nombre_empresa or ticker_analisis)
-        fig1, ax1 = plt.subplots(figsize=(7.5, 3.2))
-        ax1.hist(m["retornos"]*100, bins=40, color=COLORS["primary"], alpha=0.85, edgecolor="white")
-        ax1.set_title(f"Rendimientos diarios (%) — {nombre_empresa}", fontweight="bold")
-        ax1.grid(True, alpha=0.3)
-        plt.tight_layout()
-        em = {"bajo": ("🟢", COLORS["green_light"], COLORS["green"]),
-              "medio": ("🟡", COLORS["yellow_light"], COLORS["yellow"]),
-              "alto": ("🔴", COLORS["red_light"], COLORS["red"])}
-        cards = ""
-        for k, lab in {"mercado": "Mercado", "credito": "Crédito", "liquidez": "Liquidez",
-                       "operacional": "Operacional", "legal": "Legal", "reputacional": "Reputacional"}.items():
-            niv, det = riesgos[k]
-            icon, bg, border = em.get(niv, ("⚪", "#F1F5F9", "#94A3B8"))
-            cards += f'<div style="background:{bg};border-left:5px solid {border};padding:12px 14px;border-radius:10px;margin-bottom:8px;"><div style="font-weight:700;font-size:14px;">{icon} {lab} — {niv.upper()}</div><div style="font-size:12px;color:#475569;margin-top:3px;">{det}</div></div>'
-        tablero = f'<div style="background:white;border:1px solid #E2E8F0;border-radius:12px;padding:16px;"><div style="font-size:16px;font-weight:700;margin-bottom:12px;">🚦 Tablero de Alertas — {nombre_empresa}</div>{cards}</div>'
-        return md, {"metricas": m, "riesgos": riesgos, "prediccion": pred, "fig_riesgo": fig1}, fig1, tablero
-    except Exception as e:
-        fig, ax = plt.subplots(figsize=(5, 2)); ax.axis("off")
-        return f"<div style='color:#DC2626;'>⚠️ Error: {e}</div>", {}, fig, ""
-
-def run_sim(pack, n, umbral):
-    try:
-        m = (pack or {}).get("metricas") or {}
-        if not m:
-            return "Calcula primero Riesgos.", {}, None, ""
-        nombre_emp = m.get("nombre") or "la empresa"
-        sim = simulacion_decision(m["mu_diario"], m["sigma_diario"], int(n or 2000), float(umbral or 0.3))
-        fig, ax = plt.subplots(figsize=(7.5, 3.2))
-        ax.hist(sim["distribucion"]*100, bins=40, color=COLORS["green"], alpha=0.85, edgecolor="white")
-        ax.axvline(0, color=COLORS["red"], ls="--", lw=1.5)
-        ax.set_title(f"Monte Carlo → {sim['decision'].upper()}", fontweight="bold")
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        sim["fig_mc"] = fig
-        interpretacion = interpretar_grafico_montecarlo(sim, nombre_emp)
-        return sim["detalle"], sim, fig, interpretacion
-    except Exception as e:
-        fig, ax = plt.subplots(figsize=(5, 2)); ax.axis("off")
-        return f"Error: {e}", {}, fig, ""
-
-def run_integ(diag, pack, sim):
-    try:
-        if not diag or not pack:
-            return "Completa Diagnóstico y Riesgos primero.", {}, {}
-        integ = analisis_integrado(diag, pack)
-        nombre = integ.get("nombre") or "Empresa"
-        narrativa = interpretacion_narrativa(nombre, diag, pack, sim, integ)
-        texto = integ["texto_md"] + f"\n\n#### 🧠 Interpretación\n{narrativa}"
-        ctx = {
-            "z_info": diag.get("z_info"),
-            "clasificacion": integ.get("clasificacion"),
-            "decision": (sim or {}).get("decision"),
-            "score": integ.get("score"),
-            "nombre": nombre,
-            "integ": integ,
-            "razones": (diag or {}).get("razones"),
-            "riesgos": (pack or {}).get("riesgos"),
-            "metricas": (pack or {}).get("metricas"),
-            "sim": sim or {},
-        }
-        return texto, integ, ctx
-    except Exception as e:
-        return f"Error: {e}", {}, {}
-
-def actualizar_ctx_mercado(ctx, precios, tickers, periodo, anio):
-    ctx = dict(ctx or {})
-    if precios is None or not tickers:
-        return ctx
-    etiqueta = _etiqueta_periodo(periodo, anio)
-    resumen = []
-    for t in tickers:
-        try:
-            s = precios[t].dropna()
-            r = (s.iloc[-1] / s.iloc[0] - 1) * 100
-            resumen.append(f"{nombre_de(t)} ({t}): {r:+.1f}%")
-        except Exception:
-            resumen.append(f"{nombre_de(t)} ({t})")
-    ctx["mercado_comparado"] = {"periodo": etiqueta, "empresas": resumen}
-    return ctx
-
-def actualizar_ctx_calculadora(ctx, tipo, texto_resultado):
-    ctx = dict(ctx or {})
-    if tipo and texto_resultado:
-        resumen = _re.sub(r"<[^>]+>", "", str(texto_resultado)).replace("**", "").strip()
-        ctx["ultimo_calculo"] = f"{tipo}: {resumen[:200]}"
-    return ctx
-
-print("✅ BLOQUE 9 listo")
-
-# BLOQUE 10 — Asistente Lógico y Explicativo
-CONCEPTOS = {
-    "wacc": "WACC es el costo promedio ponderado de capital. Es la rentabilidad mínima que debe generar la empresa para no destruir valor.",
-    "eva": "EVA (Valor Económico Agregado). EVA > 0 crea valor; EVA < 0 destruye valor.",
-    "roe": "ROE = Utilidad Neta / Patrimonio. Mide la rentabilidad para los accionistas.",
-    "roa": "ROA = Utilidad Neta / Activos Totales. Mide la eficiencia en el uso de los activos.",
-    "z altman": "Z de Altman predice riesgo de quiebra. Z > 2.99 Zona Segura | 1.81-2.99 Zona Gris | < 1.81 Zona de Riesgo.",
-    "z de altman": "Z de Altman predice riesgo de quiebra. Z > 2.99 Zona Segura | 1.81-2.99 Zona Gris | < 1.81 Zona de Riesgo.",
-    "altman": "Z de Altman predice riesgo de quiebra. Z > 2.99 Zona Segura | 1.81-2.99 Zona Gris | < 1.81 Zona de Riesgo.",
-    "var": "VaR (Value at Risk) es la pérdida máxima esperada con un nivel de confianza (95% o 99%).",
-    "volatilidad": "Mide la oscilación del precio. Se anualiza como σ diaria × √252.",
-    "coeficiente de variación": "CV = Volatilidad / Retorno. Indica el riesgo por cada unidad de rentabilidad. Más bajo es mejor.",
-    "montecarlo": "Simulación Monte Carlo genera miles de escenarios posibles usando la media y volatilidad histórica.",
-    "monte carlo": "Simulación Monte Carlo genera miles de escenarios posibles usando la media y volatilidad histórica.",
-    "tir": "TIR es la tasa que hace el VAN = 0. Si TIR > costo de capital, el proyecto es atractivo.",
-    "van": "VAN descuenta los flujos futuros. VAN > 0 indica que el proyecto crea valor.",
-    "capm": "CAPM: Ke = Rf + β × (Rm − Rf). Calcula el costo del equity.",
-    "razon corriente": "Activo Corriente / Pasivo Corriente. > 1.5 suele ser saludable.",
-    "razón corriente": "Activo Corriente / Pasivo Corriente. > 1.5 suele ser saludable.",
-    "prueba acida": "(Activo Corriente − Inventarios) / Pasivo Corriente.",
-    "prueba ácida": "(Activo Corriente − Inventarios) / Pasivo Corriente.",
-    "capital de trabajo": "Activo Corriente − Pasivo Corriente. Margen de seguridad operativo.",
-    "dupont": "Descompone el ROE en: Margen Neto × Rotación de Activos × Apalancamiento.",
-    "liquidez": "Capacidad de pagar deudas de corto plazo.",
-    "endeudamiento": "Porcentaje de activos financiados con deuda.",
-    "beta": "Beta mide qué tan sensible es una acción frente al mercado. Beta > 1 = más volátil.",
-    "drawdown": "Máximo Drawdown es la mayor caída porcentual desde un máximo histórico.",
-    "diversificacion": "Repartir la inversión entre varios activos para reducir el riesgo total.",
-    "diversificación": "Repartir la inversión entre varios activos para reducir el riesgo total.",
-    "margen neto": "Margen Neto = Utilidad Neta / Ventas.",
-    "rotacion de activos": "Rotación de Activos = Ventas / Activos Totales.",
-}
-
-_CONTINUAR = ["si", "s", "dale", "va", "claro", "cuentame mas", "mas", "explica", "explicame mas", "continua", "sigue"]
-_CIERRE = ["gracias", "ok", "vale", "perfecto", "listo", "entendido"]
-_SALUDO = ["hola", "buenos dias", "buenas", "hey", "que tal", "buenas tardes", "buenas noches"]
-_RESUMEN = ["resumen", "resume", "resumeme", "como va todo", "cuentame todo", "dame un resumen", "todo lo que tienes", "como esta mi empresa"]
-_RIESGO_ALTO = ["riesgo mas alto", "peor riesgo", "mayor riesgo", "riesgo mas critico", "cual es el riesgo mas grande"]
-_RIESGO_BAJO = ["riesgo mas bajo", "riesgo menor", "menor riesgo"]
-_RIESGOS_TODOS = ["cuales son mis riesgos", "que riesgos tengo", "dime los riesgos", "los 6 riesgos", "que tan riesgosa es"]
-_INVERSION = ["puedo invertir", "debo invertir", "deberia invertir", "vale la pena invertir", "es buena inversion",
-              "me conviene invertir", "conviene invertir", "invertir en mi empresa", "recomiendas invertir",
-              "deberia comprar acciones", "puedo comprar acciones", "es seguro invertir"]
-_INVERSION_DEBIL = ["invertir", "inversion", "comprar acciones", "es rentable", "buen negocio"]
-_CATALOGO_LISTA = ["que empresas tienes", "que empresas contiene", "que empresas hay", "lista de empresas", "tu catalogo"]
-_MERCADO_PREGUNTA = ["que empresas comparaste", "que analizaste en mercado", "que comparaste", "resultado de la comparacion", "como les fue"]
-_CALC_PREGUNTA = ["que calculaste", "ultimo calculo", "que hiciste en la calculadora", "resultado de la calculadora"]
-
-def _normalizar(texto):
-    t = str(texto or "").lower().strip()
-    t = _ud.normalize("NFKD", t)
-    t = "".join(c for c in t if not _ud.combining(c))
-    t = _re.sub(r"[¿?¡!,.;:()\[\]\"']", " ", t)
-    t = _re.sub(r"\s+", " ", t).strip()
-    return t
-
-def _contiene_alguna(q_norm, frases):
-    return any(f in q_norm for f in frases)
-
-def _numero_o_texto(v, es_pct=False):
-    if v is None:
-        return "N/D"
-    return f"{v*100:.2f}%" if es_pct else f"{v:,.2f}"
-
-def _ejemplo_con_datos(tema, contexto):
-    razones = contexto.get("razones") or {}
-    metricas = contexto.get("metricas") or {}
-    z_info = contexto.get("z_info") or {}
-    sim = contexto.get("sim") or {}
-    nombre = contexto.get("nombre") or "tu empresa"
-
-    mapa_razones = {
-        "roe": ("roe", True, "ROE"),
-        "roa": ("roa", True, "ROA"),
-        "razon corriente": ("razon_corriente", False, "la razón corriente"),
-        "razón corriente": ("razon_corriente", False, "la razón corriente"),
-        "liquidez": ("razon_corriente", False, "la razón corriente"),
-        "endeudamiento": ("endeudamiento", True, "el endeudamiento"),
-        "prueba acida": ("prueba_acida", False, "la prueba ácida"),
-        "prueba ácida": ("prueba_acida", False, "la prueba ácida"),
-        "capital de trabajo": ("ktn", False, "el capital de trabajo neto"),
-        "dupont": ("dupont", True, "el ROE por DuPont"),
-        "margen neto": ("margen_neto", True, "el margen neto"),
-    }
-    if tema in mapa_razones:
-        clave, es_pct, etiqueta = mapa_razones[tema]
-        val = razones.get(clave)
-        if val is not None:
-            return f"En **{nombre}**, {etiqueta} actual es **{_numero_o_texto(val, es_pct)}**."
-
-    if tema in ("z altman", "z de altman", "altman") and z_info:
-        return f"En **{nombre}**, la zona Z de Altman es **{z_info.get('zona')}**. {z_info.get('rec','')}"
-
-    mapa_metricas = {
-        "volatilidad": ("volatilidad_anual", True, "la volatilidad anualizada"),
-        "var": ("var_1d_95", True, "el VaR a 1 día (95%)"),
-        "drawdown": ("max_drawdown", True, "el máximo drawdown"),
-        "coeficiente de variación": ("coeficiente_variacion", False, "el coeficiente de variación"),
-    }
-    if tema in mapa_metricas:
-        clave, es_pct, etiqueta = mapa_metricas[tema]
-        val = metricas.get(clave)
-        if val is not None:
-            return f"En **{nombre}**, {etiqueta} es **{_numero_o_texto(val, es_pct)}**."
-
-    if tema in ("montecarlo", "monte carlo") and sim:
-        return (f"En **{nombre}**, la simulación Monte Carlo recomendó **{sim.get('decision','N/D').upper()}** "
-                f"(probabilidad de pérdida {sim.get('probabilidad_desfavorable',0)*100:.1f}%, "
-                f"retorno esperado {sim.get('retorno_esperado',0)*100:.1f}%).")
-    return None
-
-def _resumen_general(contexto):
-    nombre = contexto.get("nombre") or "tu empresa"
-    clasif = contexto.get("clasificacion")
-    score = contexto.get("score")
-    decision = contexto.get("decision")
-    razones = contexto.get("razones") or {}
-    riesgos = contexto.get("riesgos") or {}
-    z_info = contexto.get("z_info") or {}
-
-    if not clasif and not razones and not riesgos:
-        return None
-
-    partes = [f"Esto es lo que tengo sobre **{nombre}** hasta ahora:"]
-    if clasif:
-        extra = f" (score {score:.1f}/100)" if score is not None else ""
-        partes.append(f"- Estado general: **{clasif.upper()}**{extra}.")
-    if razones.get("razon_corriente") is not None:
-        partes.append(f"- Liquidez (razón corriente): **{_numero_o_texto(razones['razon_corriente'])}**.")
-    if razones.get("endeudamiento") is not None:
-        partes.append(f"- Endeudamiento: **{_numero_o_texto(razones['endeudamiento'], True)}**.")
-    if razones.get("roe") is not None:
-        partes.append(f"- ROE: **{_numero_o_texto(razones['roe'], True)}**.")
-    if z_info:
-        partes.append(f"- Z de Altman: **{z_info.get('zona','N/D')}**.")
-    if riesgos:
-        altos = [k for k, v in riesgos.items() if v[0] == "alto"]
-        if altos:
-            partes.append(f"- Riesgos en nivel ALTO: **{', '.join(altos)}**.")
-        else:
-            partes.append("- Ningún riesgo está en nivel alto.")
-    if decision:
-        partes.append(f"- Simulación Monte Carlo: **{decision.upper()}**.")
-    partes.append("\n¿Quieres que profundice en alguno de estos puntos?")
-    return "\n".join(partes)
-
-def _riesgo_extremo(contexto, buscar="alto"):
-    riesgos = contexto.get("riesgos") or {}
-    nombre = contexto.get("nombre") or "tu empresa"
-    if not riesgos:
-        return None
-    labels = {"mercado": "Mercado", "credito": "Crédito", "liquidez": "Liquidez",
-              "operacional": "Operacional", "legal": "Legal", "reputacional": "Reputacional"}
-    candidatos = [(k, v[0], v[1]) for k, v in riesgos.items() if v[0] == buscar]
-    if not candidatos:
-        return f"En **{nombre}** no hay ningún riesgo clasificado como **{buscar.upper()}**."
-    nombres = ", ".join(labels.get(k, k) for k, _, _ in candidatos)
-    detalle = "; ".join(det for _, _, det in candidatos)
-    return f"En **{nombre}**, el/los riesgo(s) en nivel **{buscar.upper()}** son: **{nombres}** ({detalle})."
-
-def _recomendacion_inversion(contexto):
-    nombre = contexto.get("nombre") or "tu empresa"
-    clasif = contexto.get("clasificacion")
-    score = contexto.get("score")
-    sim = contexto.get("sim") or {}
-    decision = sim.get("decision") or contexto.get("decision")
-    prob = sim.get("probabilidad_desfavorable")
-    ret_e = sim.get("retorno_esperado")
-    razones = contexto.get("razones") or {}
-    riesgos = contexto.get("riesgos") or {}
-
-    if not clasif and not decision and not razones:
-        return ("Aún no tengo suficiente información. Ejecuta **Diagnóstico**, **Riesgos** y la **Simulación Monte Carlo** "
-                "en la pestaña 'Diagnóstico & Riesgos', y luego pregúntame de nuevo.")
-
-    partes = [f"Con lo que tengo de **{nombre}**, esto es lo que puedo decirte sobre invertir:"]
-    if clasif:
-        extra = f" (score {score:.1f}/100)" if score is not None else ""
-        partes.append(f"- Diagnóstico general: **{clasif.upper()}**{extra}.")
-    if decision:
-        detalle_sim = f", con {prob*100:.1f}% de probabilidad de pérdida" if prob is not None else ""
-        detalle_ret = f" y retorno esperado de {ret_e*100:.1f}%" if ret_e is not None else ""
-        partes.append(f"- Simulación Monte Carlo sugiere **{decision.upper()}**{detalle_sim}{detalle_ret}.")
-    if razones.get("razon_corriente") is not None:
-        partes.append(f"- Liquidez (razón corriente): {_numero_o_texto(razones['razon_corriente'])}.")
-    if razones.get("endeudamiento") is not None:
-        partes.append(f"- Endeudamiento: {_numero_o_texto(razones['endeudamiento'], True)}.")
-    if riesgos:
-        altos = [k for k, v in riesgos.items() if v[0] == "alto"]
-        if altos:
-            partes.append(f"- Riesgos en nivel ALTO: **{', '.join(altos)}**.")
-
-    if clasif == "saludable" and decision == "aceptar":
-        veredicto = "En conjunto, **sí sería razonable considerarlo**, siempre con diversificación."
-    elif clasif == "alerta" or decision == "rechazar":
-        veredicto = "En conjunto, **no parece el mejor momento** para invertir."
-    else:
-        veredicto = "En conjunto, el panorama es **mixto**: podrías considerarlo con cautela."
-
-    partes.append(f"\n**Veredicto:** {veredicto}")
-    partes.append("\n> ℹ️ Esto no es una recomendación formal de inversión.")
-    return "\n".join(partes)
-
-def _buscar_empresa_catalogo(q_norm):
-    palabras = q_norm.split()
-    for t in CATALOGO:
-        if t.lower() in palabras:
-            return t
-    for t, nombre_emp in CATALOGO.items():
-        piezas = [_normalizar(w) for w in nombre_emp.replace("-", " ").replace(".", "").replace(",", "").split()]
-        candidata = next((w for w in piezas if len(w) >= 4), None)
-        if candidata and candidata in q_norm:
-            return t
-    return None
-
-def _info_empresa_catalogo(ticker, contexto):
-    nombre_cat = CATALOGO.get(ticker, ticker)
-    nombre_actual = contexto.get("nombre")
-    if nombre_actual and _normalizar(nombre_actual) == _normalizar(nombre_cat):
-        resumen = _resumen_general(contexto)
-        if resumen:
-            return resumen
-    return (f"**{nombre_cat}** ({ticker}) está en mi catálogo, pero todavía no la he analizado a fondo. "
-            f"Ve a 'Diagnóstico & Riesgos', selecciónala y ejecuta Diagnóstico + Riesgos + Simulación.")
-
-def _extender_chatbot_con_memoria_modulos(q, contexto, tema_anterior):
-    if _contiene_alguna(q, _CATALOGO_LISTA):
-        muestras = ", ".join(list(CATALOGO.values())[:6])
-        return (f"Tengo un catálogo de **{len(CATALOGO)} empresas**. Por ejemplo: {muestras}, entre otras."), tema_anterior
-
-    if _contiene_alguna(q, _MERCADO_PREGUNTA):
-        mc = contexto.get("mercado_comparado")
-        if mc:
-            lineas = "\n".join(f"- {e}" for e in mc.get("empresas", []))
-            return f"En tu última comparación de mercado (**{mc.get('periodo','')}**):\n{lineas}", "mercado"
-        return "Aún no has hecho ninguna comparación en 'Mercado & Inversión'.", tema_anterior
-
-    if _contiene_alguna(q, _CALC_PREGUNTA):
-        uc = contexto.get("ultimo_calculo")
-        if uc:
-            return f"Lo último que calculaste fue:\n{uc}", "calculadora"
-        return "Aún no has hecho ningún cálculo en la Calculadora Financiera.", tema_anterior
-
-    empresa_encontrada = _buscar_empresa_catalogo(q)
-    if empresa_encontrada:
-        return _info_empresa_catalogo(empresa_encontrada, contexto), "empresa_catalogo"
-
-    return None
-
-def chatbot_responder(pregunta, contexto=None, tema_anterior=None):
-    contexto = contexto or {}
-    clasif = contexto.get("clasificacion")
-    score = contexto.get("score")
-    decision = contexto.get("decision")
-    nombre = contexto.get("nombre") or "la empresa"
-
-    if not pregunta or not str(pregunta).strip():
-        return ("¡Hola! Puedo explicarte conceptos, interpretar resultados de **Mercado**, **Diagnóstico**, "
-                "**Riesgos**, **Simulación** y **Calculadora**. Pregúntame lo que quieras."), tema_anterior
-
-    q = _normalizar(pregunta)
-
-    if _contiene_alguna(q, _RESUMEN):
-        resumen = _resumen_general(contexto)
-        if resumen:
-            return resumen, "resumen"
-        return "Aún no tengo datos cargados. Ejecuta Diagnóstico, Riesgos y Análisis Integrado primero.", tema_anterior
-
-    if _contiene_alguna(q, _RIESGOS_TODOS):
-        riesgos = contexto.get("riesgos") or {}
-        if riesgos:
-            labels = {"mercado": "Mercado", "credito": "Crédito", "liquidez": "Liquidez",
-                      "operacional": "Operacional", "legal": "Legal", "reputacional": "Reputacional"}
-            lineas = [f"- {labels.get(k,k)}: **{v[0].upper()}** ({v[1]})" for k, v in riesgos.items()]
-            return f"Los 6 riesgos de **{nombre}** son:\n" + "\n".join(lineas), "riesgos"
-        return "Ejecuta primero Riesgos en la pestaña Diagnóstico & Riesgos.", tema_anterior
-
-    if _contiene_alguna(q, _RIESGO_ALTO):
-        r = _riesgo_extremo(contexto, "alto")
-        if r:
-            return r, "riesgos"
-        return "Ejecuta primero Riesgos.", tema_anterior
-
-    if _contiene_alguna(q, _RIESGO_BAJO):
-        r = _riesgo_extremo(contexto, "bajo")
-        if r:
-            return r, "riesgos"
-        return "Ejecuta primero Riesgos.", tema_anterior
-
-    if _contiene_alguna(q, _INVERSION):
-        return _recomendacion_inversion(contexto), "inversion"
-
-    if q in _CONTINUAR and tema_anterior:
-        ejemplo = _ejemplo_con_datos(tema_anterior, contexto)
-        base = CONCEPTOS.get(tema_anterior)
-        if ejemplo and base:
-            return f"Retomando **{tema_anterior.upper()}**: {base}\n\n{ejemplo}", tema_anterior
-        if base:
-            return f"Sobre **{tema_anterior.upper()}**: {base}", tema_anterior
-        if tema_anterior in ("analisis", "resumen"):
-            return chatbot_responder("dame un resumen", contexto, tema_anterior)
-        if tema_anterior == "riesgos":
-            return chatbot_responder("riesgo mas alto", contexto, tema_anterior)
-        if tema_anterior == "inversion":
-            return _recomendacion_inversion(contexto), "inversion"
-
-    if q in _CIERRE or _contiene_alguna(q, _CIERRE):
-        return "¡De nada! Aquí estoy si necesitas más ayuda.", tema_anterior
-
-    if _contiene_alguna(q, _SALUDO):
-        return f"¡Hola! ¿En qué te ayudo con **{nombre}** o con algún concepto financiero?", tema_anterior
-
-    if _contiene_alguna(q, ["quien eres", "que puedes hacer", "ayuda", "que sabes hacer"]):
-        return ("Soy el asistente del Robot Financiero. Explico indicadores, interpreto diagnósticos, "
-                "opino sobre si conviene invertir según tus datos y respondo preguntas libres con IA generativa."), tema_anterior
-
-    if _contiene_alguna(q, ["analiza mi empresa", "analiza la empresa", "analisis", "como esta mi empresa", "salud financiera"]):
-        if clasif:
-            msg = f"**{nombre}** está en estado **{clasif.upper()}**"
-            msg += f" (score {score:.1f}/100).\n\n" if score is not None else ".\n\n"
-            if clasif == "saludable":
-                msg += "Indicadores de liquidez, rentabilidad y riesgo de quiebra se ven sólidos."
-            elif clasif == "precaucion":
-                msg += "Señales mixtas. Revisa liquidez, deuda y el tablero de alertas."
-            else:
-                msg += "Vulnerabilidades importantes. Prioriza liquidez y nivel de deuda."
-            if decision:
-                msg += f"\n\nSimulación Monte Carlo: **{decision.upper()}**."
-            return msg, "analisis"
-        return "Ejecuta primero Diagnóstico y Riesgos, luego pide «Analiza mi empresa».", tema_anterior
-
-    if _contiene_alguna(q, ["decision", "simulacion", "aceptar", "rechazar", "montecarlo", "monte carlo"]):
-        if decision:
-            return f"La simulación Monte Carlo recomendó **{decision.upper()}** para **{nombre}**.", "montecarlo"
-        return "Ejecuta primero la simulación Monte Carlo.", tema_anterior
-
-    extra = _extender_chatbot_con_memoria_modulos(q, contexto, tema_anterior)
-    if extra:
-        return extra
-
-    # Consulta a Gemini para preguntas abiertas
-    respuesta_llm = responder_con_llm(pregunta, contexto)
-    if respuesta_llm:
-        return respuesta_llm, tema_anterior
-
-    for k, v in CONCEPTOS.items():
-        if _normalizar(k) in q:
-            ejemplo = _ejemplo_con_datos(k, contexto)
-            resp = f"**{k.upper()}**\n\n{v}"
-            if ejemplo:
-                resp += f"\n\n{ejemplo}"
-            else:
-                resp += f"\n\n¿Quieres que lo explique con los números de **{nombre}**? Responde «sí»."
-            return resp, k
-
-    if _contiene_alguna(q, _INVERSION_DEBIL):
-        return _recomendacion_inversion(contexto), "inversion"
-
-    return ("No estoy seguro de haber entendido. Puedes preguntarme:\n"
-            "• «¿Puedo invertir en mi empresa?»\n• «Dame un resumen»\n• «¿Cuál es mi riesgo más alto?»\n"
-            "• «Explícame el WACC»\n• «Qué empresas comparaste»\n• o «cuéntame más»."), tema_anterior
-
-def analisis_integrado(diag, pack_riesgo):
-    razones = (diag or {}).get("razones") or {}
-    z_info = (diag or {}).get("z_info") or {}
-    m = (pack_riesgo or {}).get("metricas") or {}
-    riesgos = (pack_riesgo or {}).get("riesgos") or {}
-    nombre = (diag or {}).get("nombre") or m.get("nombre") or "Empresa"
-    score = 50.0
-    z, rc, end, roe, vol = razones.get("z"), razones.get("razon_corriente"), razones.get("endeudamiento"), razones.get("roe"), m.get("volatilidad_anual")
-    if z is not None: score += 20 if z > 2.99 else (5 if z >= 1.81 else -25)
-    if rc is not None: score += 10 if rc >= 1.5 else (-15 if rc < 1 else 0)
-    if end is not None: score += -15 if end > 0.7 else (-5 if end > 0.45 else 5)
-    if roe is not None: score += 10 if roe >= 0.12 else (-10 if roe < 0.05 else 3)
-    if vol is not None: score += -15 if vol > 0.45 else (-5 if vol > 0.25 else 5)
-    if riesgos:
-        mapa = {"bajo": 20, "medio": 50, "alto": 80}
-        avg = np.mean([mapa.get(v[0], 50) for v in riesgos.values()])
-        score += (50 - avg) / 5
-    score = float(np.clip(score, 0, 100))
-    if score >= 70:
-        clasif, color, msg = "saludable", COLORS["green"], "Diagnóstico **SALUDABLE**. Solidez y riesgo controlado."
-    elif score >= 45:
-        clasif, color, msg = "precaucion", COLORS["yellow"], "Diagnóstico en **PRECAUCIÓN**. Señales mixtas."
-    else:
-        clasif, color, msg = "alerta", COLORS["red"], "Diagnóstico en **ALERTA**. Vulnerabilidades materiales."
-    md = f"""## 🎯 Análisis Integrado — **{nombre}** <span style="color:{color}">● {clasif.upper()}</span>
-
-{msg}
-
-**Score global: {score:.1f} / 100**
-
-| Clave | Valor |
-| :--- | :---: |
-| Z Altman | {z:.2f if isinstance(z, (int, float)) else 'N/D'} |
-| Zona Z | {z_info.get('zona', 'N/D')} |
-| Razón corriente | {rc:.2f if isinstance(rc, (int, float)) else 'N/D'} |
-| ROE | {f'{roe*100:.2f}%' if isinstance(roe, (int, float)) else 'N/D'} |
-| Endeudamiento | {f'{end*100:.2f}%' if isinstance(end, (int, float)) else 'N/D'} |
-| Volatilidad | {f'{vol*100:.2f}%' if isinstance(vol, (int, float)) else 'N/D'} |
-"""
-    return {"clasificacion": clasif, "score": score, "texto_md": md, "z_info": z_info, "nombre": nombre}
-
-def interpretacion_narrativa(nombre_empresa, diag, pack, sim, integ):
-    razones = (diag or {}).get("razones") or {}
-    z_info = (diag or {}).get("z_info") or {}
-    m = (pack or {}).get("metricas") or {}
-    riesgos = (pack or {}).get("riesgos") or {}
-    frases = []
-
-    rc = razones.get("razon_corriente")
-    if rc is not None:
-        if rc >= 1.5:
-            frases.append(f"Por cada $1 que la empresa debe pagar pronto, tiene ${rc:.2f} disponibles para cubrirlo, así que tiene un buen colchón para pagar sus deudas de corto plazo sin apuros.")
-        elif rc >= 1:
-            frases.append(f"Por cada $1 que debe pagar pronto, tiene ${rc:.2f} disponibles: alcanza, pero justo, por lo que conviene vigilar de cerca las fechas de pago.")
-        else:
-            frases.append(f"Por cada $1 que debe pagar pronto, solo tiene ${rc:.2f} disponibles: es decir, no le alcanzaría con lo que tiene a la mano para cubrir sus deudas más inmediatas, lo cual es una señal de alerta.")
-
-    end = razones.get("endeudamiento")
-    if end is not None:
-        if end > 0.7:
-            frases.append(f"De cada $100 en bienes y recursos que tiene la empresa, ${end*100:.0f} fueron financiados con préstamos o deudas — es un nivel alto.")
-        elif end > 0.45:
-            frases.append(f"De cada $100 en bienes y recursos, ${end*100:.0f} vienen de deuda: es un nivel moderado.")
-        else:
-            frases.append(f"De cada $100 en bienes y recursos, solo ${end*100:.0f} vienen de deuda: la empresa depende poco de préstamos.")
-
-    roe = razones.get("roe")
-    if roe is not None:
-        if roe >= 0.12:
-            frases.append(f"Por cada $100 que los dueños tienen invertidos, están ganando ${roe*100:.1f} al año: es una rentabilidad atractiva.")
-        elif roe >= 0:
-            frases.append(f"Por cada $100 invertidos por los dueños, la empresa les está devolviendo ${roe*100:.1f} al año: una ganancia modesta.")
-        else:
-            frases.append(f"Por cada $100 invertidos por los dueños, la empresa está perdiendo ${abs(roe)*100:.1f}.")
-
-    if z_info:
-        explicacion_zona = {
-            "Zona Segura": "el riesgo de que la empresa quiebre en el corto/mediano plazo es bajo",
-            "Zona Gris": "la empresa no está en peligro inmediato, pero tampoco está del todo firme",
-            "Zona de Riesgo": "el modelo detecta señales similares a las de empresas que han tenido problemas serios",
-        }.get(z_info.get("zona"), "")
-        frases.append(f"El modelo Z de Altman la ubica en **{z_info.get('zona','N/D')}**; {explicacion_zona}.")
-
-    vol = m.get("volatilidad_anual")
-    if vol is not None:
-        if vol > 0.45:
-            frases.append(f"El precio de la acción sube y baja mucho ({vol*100:.1f}% de variación anual).")
-        elif vol > 0.25:
-            frases.append(f"El precio de la acción tiene movimientos moderados ({vol*100:.1f}% de variación anual).")
-        elif vol:
-            frases.append(f"El precio de la acción se mueve poco ({vol*100:.1f}% de variación anual).")
-
-    if riesgos:
-        labels = {"mercado": "de mercado", "credito": "de crédito", "liquidez": "de liquidez",
-                  "operacional": "operacional", "legal": "legal/regulatorio", "reputacional": "reputacional"}
-        altos = [labels.get(k, k) for k, v in riesgos.items() if v[0] == "alto"]
-        if altos:
-            frases.append(f"De los 6 riesgos, los que están en nivel más alto son: {', '.join(altos)}.")
-        else:
-            frases.append("Ninguno de los 6 riesgos está en nivel alto en este momento.")
-
-    if sim:
-        decision_txt = {
-            "aceptar": "los números favorecen considerar la inversión",
-            "revisar": "los resultados están parejos entre ganar y perder",
-            "rechazar": "los números no favorecen invertir en este momento",
-        }.get(sim.get("decision"), "")
-        frases.append(f"La simulación Monte Carlo indica que {sim.get('probabilidad_desfavorable',0)*100:.0f} de cada 100 escenarios terminaron en pérdida, con retorno esperado de {sim.get('retorno_esperado',0)*100:+.1f}%. En otras palabras, {decision_txt}.")
-
-    if integ:
-        clasif_txt = {
-            "saludable": "está en buen estado general",
-            "precaucion": "muestra señales mixtas",
-            "alerta": "tiene vulnerabilidades importantes",
-        }.get(integ.get("clasificacion"), "")
-        frases.append(f"Poniendo todo junto, {nombre_empresa} obtiene un puntaje de **{integ.get('score',0):.0f} sobre 100**, lo que significa que {clasif_txt}.")
-
-    if not frases:
-        return "No hay suficiente información para generar una interpretación. Completa Diagnóstico, Riesgos y Simulación."
-    return " ".join(frases)
-
-def grafico_resumen_asistente(ctx):
-    ctx = ctx or {}
-    score = ctx.get("score")
-    riesgos = ctx.get("riesgos") or {}
-    nombre = ctx.get("nombre") or "tu empresa"
-
-    if score is None:
-        fig, ax = plt.subplots(figsize=(4.6, 4.2))
-        ax.axis("off")
-        ax.text(0.5, 0.6, "📊", ha="center", va="center", fontsize=40)
-        ax.text(0.5, 0.3, "Completa Diagnóstico → Riesgos → Análisis Integrado\npara ver aquí el resumen visual de tu empresa.",
-                ha="center", va="center", fontsize=9.5, color=COLORS["muted"], wrap=True)
-        plt.tight_layout()
-        return fig
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(4.6, 5.6), gridspec_kw={"height_ratios": [1, 1.3]})
-    color_score = COLORS["green"] if score >= 70 else COLORS["yellow"] if score >= 45 else COLORS["red"]
-    ax1.pie([score, 100 - score], colors=[color_score, "#E2E8F0"], startangle=90, counterclock=False,
-            wedgeprops={"width": 0.35, "edgecolor": "white"})
-    ax1.text(0, 0, f"{score:.0f}\n/100", ha="center", va="center", fontsize=16, fontweight="bold")
-    ax1.set_title(f"Score integrado — {nombre}", fontweight="bold", fontsize=11)
-
-    if riesgos:
-        labels = {"mercado": "Mercado", "credito": "Crédito", "liquidez": "Liquidez",
-                  "operacional": "Operacional", "legal": "Legal", "reputacional": "Reputacional"}
-        mapa_val = {"bajo": 1, "medio": 2, "alto": 3}
-        mapa_col = {"bajo": COLORS["green"], "medio": COLORS["yellow"], "alto": COLORS["red"]}
-        claves = list(labels.keys())
-        vals = [mapa_val.get(riesgos.get(k, ("bajo",))[0], 1) for k in claves]
-        cols = [mapa_col.get(riesgos.get(k, ("bajo",))[0], COLORS["muted"]) for k in claves]
-        ax2.barh([labels[k] for k in claves], vals, color=cols)
-        ax2.set_xlim(0, 3)
-        ax2.set_xticks([1, 2, 3])
-        ax2.set_xticklabels(["Bajo", "Medio", "Alto"])
-        ax2.set_title("Semáforo de los 6 riesgos", fontweight="bold", fontsize=11)
-        ax2.grid(True, alpha=0.3, axis="x")
-    else:
-        ax2.axis("off")
-        ax2.text(0.5, 0.5, "Sin datos de riesgo aún", ha="center", va="center", color=COLORS["muted"])
-    plt.tight_layout()
-    return fig
-
-def chat_ui(hist, msg, ctx, tema):
-    if not msg or not str(msg).strip():
-        return hist, "", tema
-    try:
-        resp, nuevo_tema = chatbot_responder(msg, ctx or {}, tema)
-    except Exception as e:
-        resp = f"⚠️ Tuve un problema respondiendo: {e}. Intenta reformular la pregunta."
-        nuevo_tema = tema
-    hist = list(hist or [])
-    hist.append({"role": "user", "content": msg})
-    hist.append({"role": "assistant", "content": resp})
-    return hist, "", nuevo_tema
-
-def sugerencia_rapida(pregunta, hist, ctx, tema):
-    return chat_ui(hist, pregunta, ctx, tema)
-
-DEFINICIONES_CALC = {
-    "Interés Simple": "El interés simple se calcula siempre sobre el mismo capital inicial. Fórmula: I = C × r × t.",
-    "Interés Compuesto": "El interés compuesto se calcula sobre el capital MÁS los intereses ya generados. Fórmula: M = C × (1+r)^n.",
-    "Valor Futuro": "Si tengo esta plata hoy y la invierto a esta tasa, ¿cuánto tendré en el futuro? VF = VP × (1+r)^n.",
-    "Valor Presente": "Si quiero tener cierta cantidad en el futuro, ¿cuánto necesito invertir hoy? VP = VF / (1+r)^n.",
-    "Anualidad VP": "Valor presente de una serie de cuotas iguales. Ordinaria = pago al final del periodo; anticipada = al inicio.",
-    "Anualidad VF": "Valor futuro de una serie de cuotas iguales.",
-    "Amortización": "Muestra cuota por cuota cómo se va pagando un préstamo (interés + abono a capital).",
-    "Conversión de tasas": "Convierte una tasa a su equivalente en otra frecuencia (nominal ↔ efectiva).",
-    "TIR": "Tasa Interna de Retorno: rentabilidad real de un proyecto. Si TIR > costo de capital, conviene.",
-    "VAN": "Valor Actual Neto: si es positivo el proyecto crea valor; si es negativo, destruye valor.",
-    "CAPM": "Estima la rentabilidad que debería exigir un inversionista según el riesgo (beta) de la acción.",
-    "WACC": "Costo promedio ponderado de capital: tasa mínima que la empresa debe ganar para no destruir valor.",
-    "EVA": "Valor Económico Agregado: EVA > 0 crea valor; EVA < 0 lo destruye.",
-}
+# ============================================================
+# FUNCIONES DE APOYO Y CALCULADORA
+# ============================================================
 
 def _fig_vacia(msg="Ingresa los datos para ver el gráfico"):
     fig, ax = plt.subplots(figsize=(6, 3))
@@ -2025,6 +1363,22 @@ def _calc_tab(tipo, v1, v2, v3, v4, v5, ctx):
     nuevo_ctx = actualizar_ctx_calculadora(ctx, tipo, texto)
     return texto, fig, nuevo_ctx
 
+DEFINICIONES_CALC = {
+    "Interés Simple": "El interés simple se calcula siempre sobre el mismo capital inicial. Fórmula: I = C × r × t.",
+    "Interés Compuesto": "El interés compuesto se calcula sobre el capital MÁS los intereses ya generados. Fórmula: M = C × (1+r)^n.",
+    "Valor Futuro": "Si tengo esta plata hoy y la invierto a esta tasa, ¿cuánto tendré en el futuro? VF = VP × (1+r)^n.",
+    "Valor Presente": "Si quiero tener cierta cantidad en el futuro, ¿cuánto necesito invertir hoy? VP = VF / (1+r)^n.",
+    "Anualidad VP": "Valor presente de una serie de cuotas iguales. Ordinaria = pago al final del periodo; anticipada = al inicio.",
+    "Anualidad VF": "Valor futuro de una serie de cuotas iguales.",
+    "Amortización": "Muestra cuota por cuota cómo se va pagando un préstamo (interés + abono a capital).",
+    "Conversión de tasas": "Convierte una tasa a su equivalente en otra frecuencia (nominal ↔ efectiva).",
+    "TIR": "Tasa Interna de Retorno: rentabilidad real de un proyecto. Si TIR > costo de capital, conviene.",
+    "VAN": "Valor Actual Neto: si es positivo el proyecto crea valor; si es negativo, destruye valor.",
+    "CAPM": "Estima la rentabilidad que debería exigir un inversionista según el riesgo (beta) de la acción.",
+    "WACC": "Costo promedio ponderado de capital: tasa mínima que la empresa debe ganar para no destruir valor.",
+    "EVA": "Valor Económico Agregado: EVA > 0 crea valor; EVA < 0 lo destruye.",
+}
+
 MENSAJE_BIENVENIDA = (
     "👋 ¡Hola! Soy **FinanIA**, el asistente del Robot Financiero Inteligente.\n\n"
     "Puedo ayudarte a:\n"
@@ -2039,6 +1393,22 @@ MENSAJE_BIENVENIDA = (
 
 def iniciar_chat():
     return [{"role": "assistant", "content": MENSAJE_BIENVENIDA}], None
+
+def chat_ui(hist, msg, ctx, tema):
+    if not msg or not str(msg).strip():
+        return hist, "", tema
+    try:
+        resp, nuevo_tema = chatbot_responder(msg, ctx or {}, tema)
+    except Exception as e:
+        resp = f"⚠️ Error interno del asistente: {e}. Intenta de nuevo o reformula la pregunta."
+        nuevo_tema = tema
+    hist = list(hist or [])
+    hist.append({"role": "user", "content": msg})
+    hist.append({"role": "assistant", "content": resp})
+    return hist, "", nuevo_tema
+
+def sugerencia_rapida(pregunta, hist, ctx, tema):
+    return chat_ui(hist, pregunta, ctx, tema)
 
 CSS = """
 .gradio-container { background: #F8FAFC !important; font-family: Inter, system-ui, sans-serif !important; }
@@ -2324,6 +1694,8 @@ with gr.Blocks(title="Robot Financiero Inteligente", css=CSS, theme=gr.themes.So
     btn_diag.click(run_diag, [ac, pc, inv, un, ven, at, pat, pt, ur, uo, vm, st_nombre], [html_diag, st_diag])
     btn_risk.click(run_riesgo_completo, [st_precios, st_tickers, st_diag, st_sector, st_nombre], [html_risk, st_riesgo, plot_h, html_tablero])
     btn_sim.click(run_sim, [st_riesgo, n_esc, umbral], [md_sim, st_sim, plot_mc, md_mc_interpretacion])
+    
+    # Sincronización completa de datos para Asistente y Resumen Visual
     btn_int.click(run_integ, [st_diag, st_riesgo, st_sim], [md_int, st_integ, st_ctx])
     btn_int.click(grafico_resumen_asistente, st_ctx, plot_chat_resumen)
     btn_pdf.click(crear_reporte_pdf, [st_nombre, st_diag, st_riesgo, st_sim, st_ctx], [file_pdf, md_pdf_status])
@@ -2342,13 +1714,13 @@ with gr.Blocks(title="Robot Financiero Inteligente", css=CSS, theme=gr.themes.So
     btn_wacc.click(lambda a, b, c, d, e, ctx: _calc_tab("WACC", a, b, c, d, e, ctx), [wacc_ke, wacc_kd, wacc_e, wacc_d, wacc_tax, st_ctx], [md_wacc, plot_wacc, st_ctx])
     btn_eva.click(lambda a, b, c, ctx: _calc_tab("EVA", a, b, c, 0, 0, ctx), [eva_nopat, eva_wacc, eva_capital, st_ctx], [md_eva, plot_eva, st_ctx])
 
-    btn_send.click(chat_ui, [chat, msg, st_ctx, st_chat_tema], [chat, msg, st_chat_tema], concurrency_limit=1)
-    msg.submit(chat_ui, [chat, msg, st_ctx, st_chat_tema], [chat, msg, st_chat_tema], concurrency_limit=1)
+    btn_send.click(chat_ui, [chat, msg, st_ctx, st_chat_tema], [chat, msg, st_chat_tema])
+    msg.submit(chat_ui, [chat, msg, st_ctx, st_chat_tema], [chat, msg, st_chat_tema])
     btn_clr.click(iniciar_chat, outputs=[chat, st_chat_tema])
-    btn_q1.click(lambda h, c, t: sugerencia_rapida("Analiza mi empresa", h, c, t), [chat, st_ctx, st_chat_tema], [chat, msg, st_chat_tema], concurrency_limit=1)
-    btn_q2.click(lambda h, c, t: sugerencia_rapida("¿Puedo invertir en mi empresa?", h, c, t), [chat, st_ctx, st_chat_tema], [chat, msg, st_chat_tema], concurrency_limit=1)
-    btn_q3.click(lambda h, c, t: sugerencia_rapida("Dame un resumen", h, c, t), [chat, st_ctx, st_chat_tema], [chat, msg, st_chat_tema], concurrency_limit=1)
-    btn_q4.click(lambda h, c, t: sugerencia_rapida("cuéntame más", h, c, t), [chat, st_ctx, st_chat_tema], [chat, msg, st_chat_tema], concurrency_limit=1)
+    btn_q1.click(lambda h, c, t: sugerencia_rapida("Analiza mi empresa", h, c, t), [chat, st_ctx, st_chat_tema], [chat, msg, st_chat_tema])
+    btn_q2.click(lambda h, c, t: sugerencia_rapida("¿Puedo invertir en mi empresa?", h, c, t), [chat, st_ctx, st_chat_tema], [chat, msg, st_chat_tema])
+    btn_q3.click(lambda h, c, t: sugerencia_rapida("Dame un resumen", h, c, t), [chat, st_ctx, st_chat_tema], [chat, msg, st_chat_tema])
+    btn_q4.click(lambda h, c, t: sugerencia_rapida("cuéntame más", h, c, t), [chat, st_ctx, st_chat_tema], [chat, msg, st_chat_tema])
     demo.load(grafico_resumen_asistente, st_ctx, plot_chat_resumen)
 
 port = int(os.environ.get("PORT", 7860))
