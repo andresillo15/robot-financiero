@@ -117,6 +117,7 @@ def _contexto_a_texto(contexto):
 def responder_con_llm(pregunta, contexto=None):
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
+        print("[FinanIA] GEMINI_API_KEY no está configurada. Usando respuestas basadas en reglas.")
         return None
 
     info_contexto = _contexto_a_texto(contexto)
@@ -140,8 +141,9 @@ def responder_con_llm(pregunta, contexto=None):
         )
         if hasattr(res, "text") and res.text:
             return res.text
-    except Exception:
-        pass
+        print(f"[FinanIA] google-genai respondió sin texto útil: {res!r}")
+    except Exception as e:
+        print(f"[FinanIA] Falló SDK google-genai: {type(e).__name__}: {e}")
 
     # Intento 2: SDK google-generativeai
     try:
@@ -151,11 +153,12 @@ def responder_con_llm(pregunta, contexto=None):
         res = model.generate_content(prompt_usuario)
         if hasattr(res, "text") and res.text:
             return res.text
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[FinanIA] Falló SDK google-generativeai: {type(e).__name__}: {e}")
 
+    print("[FinanIA] Ambos SDKs de Gemini fallaron. Usando respuestas basadas en reglas.")
     return None
-
+    
 # ============================================================
 # CATÁLOGO DE EMPRESAS
 # ============================================================
